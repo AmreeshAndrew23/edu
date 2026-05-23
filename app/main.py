@@ -1,12 +1,7 @@
 import os
-import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from app.core.database import AsyncSessionLocal
-from app.seed.location_seed import seed_locations
-from app.seed.seed_all import seed_all
 
 from app.routers.country_routes import router as country_router
 from app.routers.student_routes import router as student_router
@@ -31,22 +26,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-async def _run_seed() -> None:
-    try:
-        async with AsyncSessionLocal() as db:
-            await seed_locations(db)
-            await seed_all(db)
-        print("Seed complete.")
-    except Exception as exc:
-        print(f"Seed error (non-fatal): {exc}")
-
-
-@app.on_event("startup")
-async def startup_event():
-    # Schedule seed as a background task so the server starts immediately
-    asyncio.create_task(_run_seed())
 
 
 @app.get("/health")
