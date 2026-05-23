@@ -15,3 +15,4 @@ class Student(Base, TimestampMixin):
 
     country = relationship("Country")
     state = relationship("State")
+    sessions = relationship("ExamSession", back_populates="student")

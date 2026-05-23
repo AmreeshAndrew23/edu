@@ -7,11 +7,22 @@ from alembic import context
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
+import os
+
 config = context.config
-config.set_main_option(
-    "sqlalchemy.url",
-    "postgresql://postgres:amre2302@localhost:5432/quizthala"
+
+# Use DATABASE_URL from env; fall back to local default for dev.
+# Alembic uses psycopg2 (sync), so strip the +asyncpg driver if present.
+_db_url = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres:amre2302@localhost:5432/quizthala",
 )
+_db_url = (
+    _db_url
+    .replace("postgres://", "postgresql://")      # Railway sometimes uses postgres://
+    .replace("postgresql+asyncpg://", "postgresql://")
+)
+config.set_main_option("sqlalchemy.url", _db_url)
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:

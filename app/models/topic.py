@@ -21,4 +21,7 @@ class Topic(Base, TimestampMixin):
         nullable=False
     )
 
+    subject = relationship("Subject", back_populates="topics")
+    blueprints = relationship("ExamBlueprint", back_populates="topic")
+    questions = relationship("Question", back_populates="topic")
   

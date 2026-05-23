@@ -17,3 +17,5 @@ passlib[bcrypt]
 python-jose
 
 python-multipart
+
+openai

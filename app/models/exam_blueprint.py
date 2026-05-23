@@ -56,6 +56,6 @@ class ExamBlueprint(Base, TimestampMixin):
         nullable=True
     )
 
-    exam = relationship("Exam")
+    exam = relationship("Exam", back_populates="blueprints")
 
-    topic = relationship("Topic")
+    topic = relationship("Topic", back_populates="blueprints")

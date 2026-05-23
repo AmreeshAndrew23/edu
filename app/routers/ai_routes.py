@@ -1,81 +1,77 @@
-from fastapi import APIRouter, Depends,HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-
 from app.models.exam import Exam
-from app.models.topic import Topic  
+from app.models.topic import Topic
 from app.models.subject import Subject
 from app.models.question import Question
 from app.services.question_service import generate_questions
 
-
-router = APIRouter(
-    prefix="/ai",
-    tags=["AI"]
-)
+router = APIRouter(prefix="/ai", tags=["AI"])
 
 
 @router.post("/generate-questions")
 async def generate_ai_questions(
-    exam_id: int,
-    subject_id: int,
-    topic_id: int,
-    difficulty: str,
-    question_count: int,
-    db: AsyncSession = Depends(get_db)
+    exam_id: int = Query(...),
+    subject_id: int = Query(...),
+    topic_id: int = Query(...),
+    difficulty: str = Query(..., description="easy | medium | hard"),
+    question_count: int = Query(..., ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
 ):
+    """
+    Generate AI questions for a specific exam + topic.
+    Maps the AI response (option_a/b/c/d, correct_option) directly to the questions table.
+    """
 
-    # validate exam
     exam = await db.get(Exam, exam_id)
-
     if not exam:
-        raise HTTPException(404, "Exam not found")
+        raise HTTPException(status_code=404, detail="Exam not found")
 
-    # validate subject
     subject = await db.get(Subject, subject_id)
-
     if not subject:
-        raise HTTPException(404, "Subject not found")
+        raise HTTPException(status_code=404, detail="Subject not found")
 
-    # validate topic
     topic = await db.get(Topic, topic_id)
-
     if not topic:
-        raise HTTPException(404, "Topic not found")
+        raise HTTPException(status_code=404, detail="Topic not found")
 
-    # generate AI questions
-    generated_questions = await generate_questions(
+    generated = await generate_questions(
         exam_name=exam.exam_name,
         subject_name=subject.name,
         topic_name=topic.topic_name,
         difficulty=difficulty,
-        question_count=question_count
+        count=question_count,
     )
 
-    saved_questions = []
+    saved: list[dict] = []
 
-    # store in DB
-    for q in generated_questions:
-
+    for q in generated:
         question = Question(
-            subject_id=subject.id,
-            topic_id=topic.id,
+            exam_id=exam_id,
+            topic_id=topic_id,
             question_text=q["question_text"],
-            options=q["options"],
-            correct_answer=q["correct_answer"],
+            option_a=q["option_a"],
+            option_b=q["option_b"],
+            option_c=q["option_c"],
+            option_d=q["option_d"],
+            correct_option=q["correct_option"].upper(),
             explanation=q.get("explanation"),
-            difficulty=difficulty,
-            generated_by_ai=True
+            difficulty_level=difficulty,
         )
-
         db.add(question)
-        saved_questions.append(question)
+        saved.append(q)
 
     await db.commit()
 
     return {
-        "message": "Questions generated successfully",
-        "count": len(saved_questions),
-        "questions": generated_questions
+        "message": f"{len(saved)} questions generated and saved",
+        "exam": exam.exam_name,
+        "exam_year": exam.exam_year,
+        "subject": subject.name,
+        "topic": topic.topic_name,
+        "difficulty": difficulty,
+        "count": len(saved),
+        "questions": saved,
     }

@@ -13,9 +13,10 @@ class Base(DeclarativeBase):
     pass
 
 
-DATABASE_URL = settings.DATABASE_URL.replace(
-    "postgresql://",
-    "postgresql+asyncpg://"
+DATABASE_URL = (
+    settings.DATABASE_URL
+    .replace("postgres://", "postgresql://")          # Railway sometimes uses postgres://
+    .replace("postgresql://", "postgresql+asyncpg://")
 )
 
 engine = create_async_engine(
