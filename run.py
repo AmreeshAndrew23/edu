@@ -1,7 +1,8 @@
 import os
 import uvicorn
 
-port = int(os.environ.get("PORT", 8000))
+# Railway injects PORT. Hardcode fallback to 8080 (confirmed from Railway logs).
+port = int(os.environ.get("PORT", 8080))
 print(f"[QuizThala] Binding to 0.0.0.0:{port}", flush=True)
 
 uvicorn.run(
