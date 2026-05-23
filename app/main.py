@@ -1,4 +1,7 @@
 import os
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,13 +18,32 @@ from app.routers.topic_routes import router as topic_router
 from app.routers.ai_routes import router as ai_router
 from app.routers.question_routes import router as question_router
 
+
+async def _run_seed() -> None:
+    """Run seed in background so server starts accepting requests immediately."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await seed_locations(db)
+            await seed_all(db)
+        print("Seed complete.")
+    except Exception as e:
+        print(f"Seed error (non-fatal): {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    asyncio.create_task(_run_seed())
+    yield
+
+
 app = FastAPI(
     title="QuizThala",
     version="1.0.0",
     description="A application built for NEET COACHING",
+    lifespan=lifespan,
 )
 
-# CORS — allow the Netlify frontend (and localhost for dev)
+# CORS
 _allowed = os.environ.get("FRONTEND_URL", "*")
 app.add_middleware(
     CORSMiddleware,
@@ -37,14 +59,7 @@ async def health_check():
     return {"status": "healthy"}
 
 
-@app.on_event("startup")
-async def startup_event():
-    async with AsyncSessionLocal() as db:
-        await seed_locations(db)
-        await seed_all(db)
-
-
-# ── Routers ──────────────────────────────────────────────────────────────────
+# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(country_router)
 app.include_router(student_router)
 app.include_router(exam_router)
