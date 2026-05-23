@@ -1,8 +1,8 @@
 import os
 import uvicorn
 
-# Railway injects PORT. Hardcode fallback to 8080 (confirmed from Railway logs).
-port = int(os.environ.get("PORT", 8080))
+# Railway injects PORT=8080. Locally defaults to 8000 to match Vite proxy.
+port = int(os.environ.get("PORT", 8000))
 print(f"[QuizThala] Binding to 0.0.0.0:{port}", flush=True)
 
 uvicorn.run(

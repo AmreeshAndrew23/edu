@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from app.routers.auth_routes import router as auth_router
 from app.routers.country_routes import router as country_router
 from app.routers.student_routes import router as student_router
 from app.routers.exam_routers import router as exam_router
@@ -14,6 +15,7 @@ from app.routers.subjects_routes import router as subject_router
 from app.routers.topic_routes import router as topic_router
 from app.routers.ai_routes import router as ai_router
 from app.routers.question_routes import router as question_router
+from app.routers.auth_routes import router as auth_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,12 +48,24 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info("=== Creating any missing DB tables ===")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("=== DB tables ready ===")
-    except Exception as exc:
-        logger.error("=== create_all failed: %s ===", exc)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("=== DB tables ready ===")
+
+    # Run each migration independently — a failing ALTER won't roll back table creation
+    _migrations = [
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS first_name VARCHAR(50)",
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS last_name VARCHAR(50)",
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS phone VARCHAR(25)",
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)",
+        "ALTER TABLE students ALTER COLUMN name DROP NOT NULL",
+    ]
+    for _sql in _migrations:
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(_sql))
+        except Exception as exc:
+            logger.warning("Migration skipped: %s — %s", _sql[:60], exc)
 
     asyncio.create_task(_background_seed())
     logger.info("=== Seed task scheduled ===")
@@ -100,6 +114,7 @@ async def health_db():
         return JSONResponse(status_code=503, content={"status": "unhealthy", "db": str(exc)})
 
 
+app.include_router(auth_router)
 app.include_router(country_router)
 app.include_router(student_router)
 app.include_router(exam_router)

@@ -13,7 +13,7 @@ pydantic
 pydantic-settings
 email-validator
 
-passlib[bcrypt]
+bcrypt
 python-jose
 
 python-multipart

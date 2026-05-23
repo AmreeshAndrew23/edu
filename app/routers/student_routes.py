@@ -8,7 +8,7 @@ from app.services.students_service import StudentService
 router = APIRouter(prefix="/students", tags=["Students"])
 
 
-@router.post("/register", response_model=StudentRegistrationResponse)
+@router.post("/Studentregister", response_model=StudentRegistrationResponse)
 async def register_student(
     payload: StudentRegisterRequest,
     db: AsyncSession = Depends(get_db)
