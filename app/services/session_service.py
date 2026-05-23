@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from sqlalchemy import select, func
@@ -5,6 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from app.models.exam import Exam
+from app.models.exam_blueprint import ExamBlueprint
+from app.models.topic import Topic
+from app.models.subject import Subject
 from app.models.question import Question
 from app.models.exam_session import ExamSession
 from app.models.student_answer import StudentAnswer
@@ -18,6 +22,8 @@ from app.schemas.session_schema import (
     AnswerResultItem,
 )
 
+logger = logging.getLogger(__name__)
+
 DIFFICULTY_COUNTS: dict[str, int] = {
     "easy": 10,
     "medium": 15,
@@ -25,14 +31,67 @@ DIFFICULTY_COUNTS: dict[str, int] = {
 }
 
 
-async def start_session(db: AsyncSession, payload: SessionStartRequest) -> SessionStartResponse:
-    """
-    Difficulty-based random question selection:
-      easy → 10 questions, medium → 15, hard → 20
-    Questions are sampled randomly from those matching exam_id + difficulty_level.
-    correct_option is NOT returned to the client.
-    """
+async def _ensure_questions(db: AsyncSession, exam: Exam, difficulty: str) -> None:
+    """Generate questions via OpenAI for any topics in this exam that are missing them."""
+    from app.services.question_service import generate_questions
 
+    rows = (await db.execute(
+        select(ExamBlueprint, Topic, Subject)
+        .join(Topic, ExamBlueprint.topic_id == Topic.id)
+        .join(Subject, Topic.subject_id == Subject.id)
+        .where(
+            ExamBlueprint.exam_id == exam.id,
+            ExamBlueprint.difficulty_level == difficulty,
+        )
+    )).all()
+
+    for bp, topic, subject in rows:
+        existing = (await db.execute(
+            select(func.count()).select_from(Question).where(
+                Question.exam_id == exam.id,
+                Question.topic_id == topic.id,
+                Question.difficulty_level == difficulty,
+            )
+        )).scalar() or 0
+
+        needed = bp.expected_questions - existing
+        if needed <= 0:
+            continue
+
+        logger.info("Auto-generating %d %s questions for topic '%s'", needed, difficulty, topic.topic_name)
+        try:
+            generated = await generate_questions(
+                exam_name=exam.exam_name,
+                subject_name=subject.name,
+                topic_name=topic.topic_name,
+                difficulty=difficulty,
+                count=needed,
+            )
+        except Exception as exc:
+            logger.error("Question generation failed for topic %s: %s", topic.topic_name, exc)
+            continue
+
+        required = {"question_text", "option_a", "option_b", "option_c", "option_d", "correct_option"}
+        for q in generated:
+            if not required.issubset(q.keys()):
+                continue
+            db.add(Question(
+                exam_id=exam.id,
+                topic_id=topic.id,
+                question_text=q["question_text"],
+                option_a=q["option_a"],
+                option_b=q["option_b"],
+                option_c=q["option_c"],
+                option_d=q["option_d"],
+                correct_option=q["correct_option"].upper(),
+                explanation=q.get("explanation"),
+                difficulty_level=difficulty,
+            ))
+
+    await db.commit()
+
+
+async def start_session(db: AsyncSession, payload: SessionStartRequest) -> SessionStartResponse:
     student = await db.get(Student, payload.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -58,10 +117,20 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     )).scalars().all()
 
     if not questions:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No {difficulty} questions found for this exam. Generate questions first.",
-        )
+        logger.info("No questions found — auto-generating for exam_id=%d difficulty=%s", payload.exam_id, difficulty)
+        await _ensure_questions(db, exam, difficulty)
+        questions = (await db.execute(
+            select(Question)
+            .where(
+                Question.exam_id == payload.exam_id,
+                Question.difficulty_level == difficulty,
+            )
+            .order_by(func.random())
+            .limit(count)
+        )).scalars().all()
+
+    if not questions:
+        raise HTTPException(status_code=503, detail="Could not generate questions. Check OPENAI_API_KEY.")
 
     session = ExamSession(
         student_id=payload.student_id,
