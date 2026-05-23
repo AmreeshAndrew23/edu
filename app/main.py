@@ -26,7 +26,7 @@ _allowed = os.environ.get("FRONTEND_URL", "*")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[_allowed] if _allowed != "*" else ["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
