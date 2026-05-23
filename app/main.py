@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -25,14 +26,24 @@ CORS_HEADERS = {
 }
 
 
+async def _background_seed():
+    from app.core.database import AsyncSessionLocal
+    from app.seed.seed_all import seed_all
+    try:
+        async with AsyncSessionLocal() as db:
+            await seed_all(db)
+        logger.info("=== Seed complete ===")
+    except Exception as exc:
+        logger.error("=== Seed failed: %s ===", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.core.database import AsyncSessionLocal, engine
-    from app.models import (  # noqa: F401 – ensure all models are registered
+    from app.core.database import engine, Base
+    from app.models import (  # noqa: F401
         Country, State, Student, Subject, Topic,
         Exam, ExamBlueprint, Question, ExamSession, StudentAnswer,
     )
-    from app.core.database import Base
 
     logger.info("=== Creating any missing DB tables ===")
     try:
@@ -41,6 +52,9 @@ async def lifespan(app: FastAPI):
         logger.info("=== DB tables ready ===")
     except Exception as exc:
         logger.error("=== create_all failed: %s ===", exc)
+
+    asyncio.create_task(_background_seed())
+    logger.info("=== Seed task scheduled ===")
 
     yield
 
