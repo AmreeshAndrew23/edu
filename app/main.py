@@ -85,10 +85,16 @@ async def health_check():
 @app.get("/health/db")
 async def health_db():
     from app.core.database import AsyncSessionLocal
+    from sqlalchemy import func
+    from app.models.exam import Exam
+    from app.models.exam_blueprint import ExamBlueprint
+    from app.models.question import Question
     try:
         async with AsyncSessionLocal() as session:
-            await session.execute(text("SELECT 1"))
-        return {"status": "healthy", "db": "connected"}
+            exams    = (await session.execute(select(func.count()).select_from(Exam))).scalar()
+            bps      = (await session.execute(select(func.count()).select_from(ExamBlueprint))).scalar()
+            qs       = (await session.execute(select(func.count()).select_from(Question))).scalar()
+        return {"status": "healthy", "exams": exams, "blueprints": bps, "questions": qs}
     except Exception as exc:
         logger.error("DB health check failed: %s", exc)
         return JSONResponse(status_code=503, content={"status": "unhealthy", "db": str(exc)})
