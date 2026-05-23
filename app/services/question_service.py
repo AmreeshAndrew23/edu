@@ -10,12 +10,6 @@ async def generate_questions(
     difficulty: str,
     count: int,
 ) -> list[dict]:
-    """
-    Ask GPT to generate NEET-style MCQs.
-    Returns a list of dicts with keys matching the questions table columns:
-    question_text, option_a, option_b, option_c, option_d, correct_option, explanation
-    """
-
     prompt = f"""Generate {count} NEET-style multiple-choice questions.
 
 Exam: {exam_name}
@@ -46,15 +40,14 @@ Return ONLY a valid JSON array with this exact structure, no markdown:
 correct_option must be exactly one character: A, B, C, or D."""
 
     client = get_openai_client()
-    response = client.chat.completions.create(
-        model="gpt-4.1-mini",
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.5,
     )
 
     content = response.choices[0].message.content.strip()
 
-    # Strip markdown code fences if model wraps them
     if content.startswith("```"):
         content = content.split("```")[1]
         if content.startswith("json"):

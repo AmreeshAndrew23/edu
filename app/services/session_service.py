@@ -68,8 +68,8 @@ async def _ensure_questions(db: AsyncSession, exam: Exam, difficulty: str) -> No
                 count=needed,
             )
         except Exception as exc:
-            logger.error("Question generation failed for topic %s: %s", topic.topic_name, exc)
-            continue
+            logger.error("Question generation failed for topic '%s': %s", topic.topic_name, exc)
+            raise  # bubble up so caller gets the real error
 
         required = {"question_text", "option_a", "option_b", "option_c", "option_d", "correct_option"}
         for q in generated:
@@ -118,7 +118,10 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
 
     if not questions:
         logger.info("No questions found — auto-generating for exam_id=%d difficulty=%s", payload.exam_id, difficulty)
-        await _ensure_questions(db, exam, difficulty)
+        try:
+            await _ensure_questions(db, exam, difficulty)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Question generation failed: {exc}")
         questions = (await db.execute(
             select(Question)
             .where(
@@ -130,7 +133,7 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
         )).scalars().all()
 
     if not questions:
-        raise HTTPException(status_code=503, detail="Could not generate questions. Check OPENAI_API_KEY.")
+        raise HTTPException(status_code=503, detail="No blueprints found for this exam — seed may not have run yet.")
 
     session = ExamSession(
         student_id=payload.student_id,
