@@ -27,14 +27,21 @@ CORS_HEADERS = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.core.database import AsyncSessionLocal
-    logger.info("=== QuizThala starting — testing DB connection ===")
+    from app.core.database import AsyncSessionLocal, engine
+    from app.models import (  # noqa: F401 – ensure all models are registered
+        Country, State, Student, Subject, Topic,
+        Exam, ExamBlueprint, Question, ExamSession, StudentAnswer,
+    )
+    from app.core.database import Base
+
+    logger.info("=== Creating any missing DB tables ===")
     try:
-        async with AsyncSessionLocal() as session:
-            await session.execute(text("SELECT 1"))
-        logger.info("=== DB connection OK ===")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("=== DB tables ready ===")
     except Exception as exc:
-        logger.error("=== DB connection FAILED: %s ===", exc)
+        logger.error("=== create_all failed: %s ===", exc)
+
     yield
 
 
@@ -70,10 +77,7 @@ async def health_db():
         return {"status": "healthy", "db": "connected"}
     except Exception as exc:
         logger.error("DB health check failed: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "db": str(exc)},
-        )
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "db": str(exc)})
 
 
 app.include_router(country_router)
