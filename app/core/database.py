@@ -19,9 +19,10 @@ DATABASE_URL = (
     .replace("postgresql://", "postgresql+asyncpg://")
 )
 
+import os
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,
+    echo=os.environ.get("SQL_ECHO", "false").lower() == "true",
 )
 
 AsyncSessionLocal = async_sessionmaker(
