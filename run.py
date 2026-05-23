@@ -1,13 +1,13 @@
+import os
 import uvicorn
 
-# Railway's target port is fixed at 8000 (set in Railway Networking UI).
-# Always bind to 8000 so Railway's proxy can reach the container.
-print("[QuizThala] Binding to 0.0.0.0:8000", flush=True)
+port = int(os.environ.get("PORT", 8000))
+print(f"[QuizThala] Binding to 0.0.0.0:{port}", flush=True)
 
 uvicorn.run(
     "app.main:app",
     host="0.0.0.0",
-    port=8000,
+    port=port,
     log_level="info",
     access_log=True,
     loop="asyncio",
