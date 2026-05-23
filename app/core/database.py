@@ -1,5 +1,4 @@
 import os
-import ssl as ssl_lib
 import logging
 
 from sqlalchemy.ext.asyncio import (
@@ -25,25 +24,15 @@ DATABASE_URL = (
     .replace("postgresql://", "postgresql+asyncpg://")
 )
 
-_is_local = any(h in DATABASE_URL for h in ("localhost", "127.0.0.1"))
-
-# For Railway (non-local), use a permissive SSL context so asyncpg can negotiate
-# SSL with the internal PostgreSQL without certificate verification issues.
-_connect_args: dict = {}
-if not _is_local:
-    _ssl_ctx = ssl_lib.create_default_context()
-    _ssl_ctx.check_hostname = False
-    _ssl_ctx.verify_mode = ssl_lib.CERT_NONE
-    _connect_args["ssl"] = _ssl_ctx
-
-logger.info("DB configured: local=%s ssl=%s", _is_local, not _is_local)
+logger.info("DB host: %s", DATABASE_URL.split("@")[-1].split("/")[0] if "@" in DATABASE_URL else "unknown")
 
 engine = create_async_engine(
     DATABASE_URL,
     echo=os.environ.get("SQL_ECHO", "false").lower() == "true",
-    connect_args=_connect_args,
-    pool_pre_ping=True,   # ping connection before use; reconnect if stale
-    pool_recycle=300,     # recycle connections every 5 min
+    # timeout=10: asyncpg will raise after 10s if it can't connect
+    connect_args={"timeout": 10},
+    pool_pre_ping=True,
+    pool_recycle=300,
     pool_size=5,
     max_overflow=10,
 )
