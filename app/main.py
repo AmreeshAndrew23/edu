@@ -1,9 +1,7 @@
-import os
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
@@ -19,6 +17,13 @@ from app.routers.question_routes import router as question_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, PATCH, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Max-Age": "86400",
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,7 +36,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("=== DB connection FAILED: %s ===", exc)
     yield
-    logger.info("=== QuizThala shutting down ===")
 
 
 app = FastAPI(
@@ -41,24 +45,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-_allowed = os.environ.get("FRONTEND_URL", "*")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[_allowed] if _allowed != "*" else ["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error("Unhandled %s on %s %s: %s",
-                 type(exc).__name__, request.method, request.url.path, exc, exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"{type(exc).__name__}: {exc}"},
-    )
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(status_code=200, headers=CORS_HEADERS)
+    response = await call_next(request)
+    for key, value in CORS_HEADERS.items():
+        response.headers[key] = value
+    return response
 
 
 @app.get("/health")
