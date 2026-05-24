@@ -2,3 +2,6 @@
 healthcheckPath = "/health"
 healthcheckTimeout = 60
 startCommand = "python run.py"
+
+[[services]]
+internalPort = 8080
