@@ -48,12 +48,9 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info("=== Creating any missing DB tables ===")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("=== DB tables ready ===")
-    except Exception as exc:
-        logger.error("=== create_all failed: %s ===", exc)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("=== DB tables ready ===")
 
     # Run each migration independently — a failing ALTER won't roll back table creation
     _migrations = [
