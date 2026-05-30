@@ -106,14 +106,15 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
 
     count = DIFFICULTY_COUNTS[difficulty]
 
+    q_filters = [
+        Question.exam_id == payload.exam_id,
+        Question.difficulty_level == difficulty,
+    ]
+    if payload.topic_id:
+        q_filters.append(Question.topic_id == payload.topic_id)
+
     questions = (await db.execute(
-        select(Question)
-        .where(
-            Question.exam_id == payload.exam_id,
-            Question.difficulty_level == difficulty,
-        )
-        .order_by(func.random())
-        .limit(count)
+        select(Question).where(*q_filters).order_by(func.random()).limit(count)
     )).scalars().all()
 
     if not questions:
@@ -123,13 +124,7 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"Question generation failed: {exc}")
         questions = (await db.execute(
-            select(Question)
-            .where(
-                Question.exam_id == payload.exam_id,
-                Question.difficulty_level == difficulty,
-            )
-            .order_by(func.random())
-            .limit(count)
+            select(Question).where(*q_filters).order_by(func.random()).limit(count)
         )).scalars().all()
 
     if not questions:

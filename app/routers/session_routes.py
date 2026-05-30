@@ -1,7 +1,13 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+from pydantic import BaseModel
 
 from app.core.database import get_db
+from app.models.student_answer import StudentAnswer
+from app.models.question import Question
+from app.models.topic import Topic
+from app.models.exam_session import ExamSession
 from app.schemas.session_schema import (
     SessionStartRequest,
     SessionStartResponse,
@@ -11,6 +17,60 @@ from app.schemas.session_schema import (
 from app.services.session_service import start_session, submit_session, get_session_results
 
 router = APIRouter(prefix="/sessions", tags=["Exam Sessions"])
+
+
+class WeakTopic(BaseModel):
+    topic_id: int
+    topic_name: str
+    total: int
+    wrong: int
+    accuracy: float  # 0–100
+
+
+@router.get("/weak-topics", response_model=list[WeakTopic])
+async def get_weak_topics(
+    student_id: int,
+    exam_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Return topics ranked by lowest accuracy for this student on this exam.
+    Only topics with at least 3 attempted questions are included.
+    """
+    rows = (await db.execute(
+        select(
+            Question.topic_id,
+            Topic.topic_name,
+            func.count(StudentAnswer.id).label("total"),
+            func.sum(
+                func.cast(StudentAnswer.is_correct == False, func.Integer())  # noqa: E712
+            ).label("wrong"),
+        )
+        .join(StudentAnswer, StudentAnswer.question_id == Question.id)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .join(Topic, Topic.id == Question.topic_id)
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.exam_id == exam_id,
+            ExamSession.status == "completed",
+        )
+        .group_by(Question.topic_id, Topic.topic_name)
+        .having(func.count(StudentAnswer.id) >= 3)
+        .order_by(func.sum(
+            func.cast(StudentAnswer.is_correct == False, func.Integer())  # noqa: E712
+        ).desc())
+    )).all()
+
+    return [
+        WeakTopic(
+            topic_id=r.topic_id,
+            topic_name=r.topic_name,
+            total=r.total,
+            wrong=r.wrong,
+            accuracy=round((1 - r.wrong / r.total) * 100, 1),
+        )
+        for r in rows
+    ]
 
 
 @router.post("/start", response_model=SessionStartResponse)

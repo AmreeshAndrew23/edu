@@ -1,9 +1,33 @@
-venv/
+# Python
 __pycache__/
-*.pyc
-.env
-.idea/
-.vscode/
-*.sqlite3
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
 dist/
 build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables — NEVER commit these
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Claude Code
+.claude/

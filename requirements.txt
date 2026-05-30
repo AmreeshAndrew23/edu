@@ -19,3 +19,5 @@ python-jose
 python-multipart
 
 openai
+
+aiosmtplib
