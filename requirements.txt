@@ -20,4 +20,4 @@ python-multipart
 
 openai
 
-aiosmtplib
+httpx
