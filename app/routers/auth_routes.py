@@ -2,7 +2,7 @@ import secrets
 import logging
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import bcrypt
@@ -76,13 +76,9 @@ def _verify_password(password: str, hashed: str) -> bool:
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/send-code", summary="Send email verification OTP")
-async def send_code(payload: SendCodeRequest):
+async def send_code(payload: SendCodeRequest, background_tasks: BackgroundTasks):
     code = _generate_otp(payload.email)
-    try:
-        await send_otp_email(payload.email, code)
-    except Exception as exc:
-        logger.error("Email send failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {exc}")
+    background_tasks.add_task(send_otp_email, payload.email, code)
     return {"message": "Verification code sent to your email."}
 
 
