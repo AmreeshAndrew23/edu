@@ -8,3 +8,4 @@ from app.models.exam_blueprint import ExamBlueprint
 from app.models.question import Question
 from app.models.exam_session import ExamSession
 from app.models.student_answer import StudentAnswer
+from app.models.chat_log import ChatLog

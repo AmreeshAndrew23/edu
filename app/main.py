@@ -15,7 +15,7 @@ from app.routers.subjects_routes import router as subject_router
 from app.routers.topic_routes import router as topic_router
 from app.routers.ai_routes import router as ai_router
 from app.routers.question_routes import router as question_router
-from app.routers.auth_routes import router as auth_router
+from app.routers.chat_routes import router as chat_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     from app.core.database import engine, Base
     from app.models import (  # noqa: F401
         Country, State, Student, Subject, Topic,
-        Exam, ExamBlueprint, Question, ExamSession, StudentAnswer,
+        Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog,
     )
 
     logger.info("=== Creating any missing DB tables ===")
@@ -123,3 +123,4 @@ app.include_router(subject_router)
 app.include_router(topic_router)
 app.include_router(ai_router)
 app.include_router(question_router)
+app.include_router(chat_router)

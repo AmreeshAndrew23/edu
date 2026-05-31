@@ -5,16 +5,12 @@ from pydantic import BaseModel, ConfigDict
 # ── Request ──────────────────────────────────────────────────────────────────
 
 class SessionStartRequest(BaseModel):
-    """
-    Student initiates a model exam session.
-    difficulty controls how many questions are served:
-      easy → 10 questions, medium → 15, hard → 20
-    Optional topic_id narrows questions to a single topic (used by Rapid Revision / Weak Area).
-    """
     student_id: int
     exam_id: int
-    difficulty: str = "medium"   # "easy" | "medium" | "hard"
+    difficulty: str = "easy"
     topic_id: int | None = None
+    subject_id: int | None = None  # filter by subject (null = full exam)
+    count: int | None = None       # override default question count
 
 
 class AnswerItem(BaseModel):

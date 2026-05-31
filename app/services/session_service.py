@@ -104,7 +104,7 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     if difficulty not in DIFFICULTY_COUNTS:
         raise HTTPException(status_code=400, detail="difficulty must be easy, medium, or hard")
 
-    count = DIFFICULTY_COUNTS[difficulty]
+    count = payload.count if payload.count else DIFFICULTY_COUNTS[difficulty]
 
     q_filters = [
         Question.exam_id == payload.exam_id,
@@ -112,6 +112,12 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     ]
     if payload.topic_id:
         q_filters.append(Question.topic_id == payload.topic_id)
+    elif payload.subject_id:
+        q_filters.append(
+            Question.topic_id.in_(
+                select(Topic.id).where(Topic.subject_id == payload.subject_id)
+            )
+        )
 
     questions = (await db.execute(
         select(Question).where(*q_filters).order_by(func.random()).limit(count)
