@@ -84,13 +84,6 @@ async def send_code(payload: SendCodeRequest, background_tasks: BackgroundTasks)
 
 @router.post("/register", response_model=StudentRegistrationResponse)
 async def register(payload: StudentRegisterRequest, db: AsyncSession = Depends(get_db)):
-    if not _verify_otp(payload.email, payload.verification_code):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired verification code. Please request a new one.",
-        )
-    _consume_otp(payload.email)
-
     existing = (await db.execute(
         select(Student).where(Student.email == payload.email)
     )).scalar_one_or_none()

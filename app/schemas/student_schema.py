@@ -16,7 +16,6 @@ class StudentRegisterRequest(BaseModel):
     date_of_birth: date
     country_id: int
     state_id: int
-    verification_code: str = Field(min_length=6, max_length=6)
 
 
 class StudentLoginRequest(BaseModel):
