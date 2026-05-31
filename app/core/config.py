@@ -9,9 +9,10 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int
     OPENAI_API_KEY: str | None = None
 
-    # Resend — set RESEND_API_KEY in Railway env vars (or .env locally)
-    RESEND_API_KEY: str | None = None
+    # Brevo — set BREVO_API_KEY in Railway env vars (or .env locally)
+    BREVO_API_KEY: str | None = None
     EMAIL_FROM_NAME: str = "QuizThala"
+    EMAIL_FROM_ADDRESS: str = "quizthala@gmail.com"
 
     model_config = SettingsConfigDict(
         env_file=".env",

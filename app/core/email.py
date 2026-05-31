@@ -6,7 +6,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-RESEND_URL = "https://api.resend.com/emails"
+BREVO_URL = "https://api.brevo.com/v3/smtp/email"
 
 
 def _build_otp_html(code: str) -> str:
@@ -54,23 +54,29 @@ def _build_otp_html(code: str) -> str:
 
 
 async def send_otp_email(to_email: str, code: str) -> None:
-    if not settings.RESEND_API_KEY:
-        logger.warning("RESEND_API_KEY not configured — OTP for %s is: %s", to_email, code)
+    if not settings.BREVO_API_KEY:
+        logger.warning("BREVO_API_KEY not configured — OTP for %s is: %s", to_email, code)
         return
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            RESEND_URL,
-            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+            BREVO_URL,
+            headers={
+                "api-key": settings.BREVO_API_KEY,
+                "Content-Type": "application/json",
+            },
             json={
-                "from": f"{settings.EMAIL_FROM_NAME} <onboarding@resend.dev>",
-                "to": [to_email],
+                "sender": {
+                    "name": settings.EMAIL_FROM_NAME,
+                    "email": settings.EMAIL_FROM_ADDRESS,
+                },
+                "to": [{"email": to_email}],
                 "subject": f"{code} is your QuizThala verification code",
-                "html": _build_otp_html(code),
+                "htmlContent": _build_otp_html(code),
             },
             timeout=10,
         )
         if response.status_code >= 400:
-            logger.error("Resend error %s: %s", response.status_code, response.text)
-            raise RuntimeError(f"Resend API error: {response.status_code}")
-        logger.info("OTP email sent to %s via Resend", to_email)
+            logger.error("Brevo error %s: %s", response.status_code, response.text)
+            raise RuntimeError(f"Brevo API error: {response.status_code}")
+        logger.info("OTP email sent to %s via Brevo", to_email)
