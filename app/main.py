@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE students ADD COLUMN IF NOT EXISTS phone VARCHAR(25)",
         "ALTER TABLE students ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)",
         "ALTER TABLE students ALTER COLUMN name DROP NOT NULL",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'ai_generated'",
+        "ALTER TABLE questions ADD COLUMN IF NOT EXISTS neet_year INTEGER",
     ]
     for _sql in _migrations:
         try:

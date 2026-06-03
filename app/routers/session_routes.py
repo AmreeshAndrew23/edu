@@ -1,3 +1,5 @@
+import random
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -106,21 +108,21 @@ async def get_recall_questions(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns a random sample of questions the student has already answered in
-    previous sessions — used as flashcard source for Memory Recall mode.
+    Returns a shuffled mix of:
+    1. Questions the student has previously answered (session history)
+    2. NEET previous-year questions uploaded into the DB (source='neet_paper')
+
+    Deduplicates by question id before shuffling.
     """
-    rows = (await db.execute(
-        select(
-            Question.id,
-            Question.question_text,
-            Question.option_a,
-            Question.option_b,
-            Question.option_c,
-            Question.option_d,
-            Question.correct_option,
-            Question.explanation,
-            Topic.topic_name,
-        )
+    _cols = (
+        Question.id, Question.question_text,
+        Question.option_a, Question.option_b, Question.option_c, Question.option_d,
+        Question.correct_option, Question.explanation, Topic.topic_name,
+    )
+
+    # 1. Student's session history
+    session_rows = (await db.execute(
+        select(*_cols)
         .join(StudentAnswer, StudentAnswer.question_id == Question.id)
         .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
         .join(Topic, Topic.id == Question.topic_id)
@@ -129,9 +131,24 @@ async def get_recall_questions(
             ExamSession.status == "completed",
         )
         .distinct()
-        .order_by(func.random())
-        .limit(limit)
     )).all()
+
+    # 2. NEET previous-year paper questions
+    neet_rows = (await db.execute(
+        select(*_cols)
+        .join(Topic, Topic.id == Question.topic_id)
+        .where(Question.source == 'neet_paper')
+    )).all()
+
+    # Merge, deduplicate by id, shuffle, limit
+    seen: set[int] = set()
+    combined = []
+    for r in session_rows + neet_rows:
+        if r.id not in seen:
+            seen.add(r.id)
+            combined.append(r)
+
+    random.shuffle(combined)
 
     return [
         RecallQuestion(
@@ -145,7 +162,7 @@ async def get_recall_questions(
             explanation=r.explanation,
             topic_name=r.topic_name,
         )
-        for r in rows
+        for r in combined[:limit]
     ]
 
 

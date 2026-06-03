@@ -47,6 +47,12 @@ class Question(Base, TimestampMixin):
     # 'easy' | 'medium' | 'hard' — inherited from blueprint's difficulty_level
     difficulty_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # 'ai_generated' | 'neet_paper'
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default='ai_generated')
+
+    # Year the NEET paper was published (null for AI-generated questions)
+    neet_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # ── Relationships ────────────────────────────────────────────────────────
 
     exam = relationship("Exam", back_populates="questions")
