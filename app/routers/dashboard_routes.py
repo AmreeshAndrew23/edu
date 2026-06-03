@@ -1,7 +1,7 @@
 import logging
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, cast, case, Date, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
@@ -291,4 +291,135 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
         weak_areas=weak_areas,
         neet_estimate=neet_estimate,
         recent_sessions=recent_sessions,
+    )
+
+
+# ── Calendar schemas ──────────────────────────────────────────────────────────
+
+class DayActivity(BaseModel):
+    date: str
+    sessions: int
+    marks: int
+    accuracy: float
+
+
+class CalendarData(BaseModel):
+    days: list[DayActivity]
+
+
+class DailySession(BaseModel):
+    session_id: int
+    subject_name: str
+    correct: int
+    total: int
+    marks: int
+    percentage: float
+
+
+class DailyStats(BaseModel):
+    date: str
+    sessions: list[DailySession]
+    total_marks: int
+    total_questions: int
+
+
+# ── Calendar endpoints ────────────────────────────────────────────────────────
+
+@router.get("/calendar", response_model=CalendarData)
+async def get_calendar_data(
+    student_id: int,
+    year: int,
+    month: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-day session activity for a given month."""
+    from calendar import monthrange
+    last_day = monthrange(year, month)[1]
+    start = date(year, month, 1)
+    end   = date(year, month, last_day)
+
+    rows = (await db.execute(
+        select(
+            cast(ExamSession.completed_at, Date).label("d"),
+            func.count(ExamSession.id).label("session_count"),
+            func.sum(func.coalesce(ExamSession.correct_count, 0)).label("total_correct"),
+            func.sum(func.coalesce(ExamSession.total_questions, 0)).label("total_qs"),
+            func.avg(ExamSession.score_percentage).label("avg_pct"),
+        )
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.status == "completed",
+            ExamSession.completed_at.isnot(None),
+            cast(ExamSession.completed_at, Date) >= start,
+            cast(ExamSession.completed_at, Date) <= end,
+        )
+        .group_by(cast(ExamSession.completed_at, Date))
+        .order_by(cast(ExamSession.completed_at, Date))
+    )).all()
+
+    days = []
+    for r in rows:
+        correct = r.total_correct or 0
+        total   = r.total_qs or 0
+        wrong   = total - correct
+        marks   = correct * 4 - wrong
+        days.append(DayActivity(
+            date=r.d.strftime("%Y-%m-%d"),
+            sessions=r.session_count,
+            marks=marks,
+            accuracy=round(float(r.avg_pct or 0), 1),
+        ))
+
+    return CalendarData(days=days)
+
+
+@router.get("/daily", response_model=DailyStats)
+async def get_daily_stats(
+    student_id: int,
+    date_str: str = Query(..., alias="date"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Individual session results for a specific date (YYYY-MM-DD)."""
+    target = date.fromisoformat(date_str)
+
+    rows = (await db.execute(
+        select(
+            ExamSession.id,
+            ExamSession.correct_count,
+            ExamSession.total_questions,
+            ExamSession.score_percentage,
+            Subject.name.label("subject_name"),
+        )
+        .outerjoin(Subject, Subject.id == ExamSession.subject_id)
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.status == "completed",
+            ExamSession.completed_at.isnot(None),
+            cast(ExamSession.completed_at, Date) == target,
+        )
+        .order_by(ExamSession.completed_at)
+    )).all()
+
+    sessions, total_marks, total_questions = [], 0, 0
+    for r in rows:
+        correct = r.correct_count or 0
+        total   = r.total_questions or 0
+        wrong   = total - correct
+        marks   = correct * 4 - wrong
+        total_marks     += marks
+        total_questions += total
+        sessions.append(DailySession(
+            session_id=r.id,
+            subject_name=r.subject_name or "Full NEET",
+            correct=correct,
+            total=total,
+            marks=marks,
+            percentage=round(float(r.score_percentage or 0), 1),
+        ))
+
+    return DailyStats(
+        date=date_str,
+        sessions=sessions,
+        total_marks=total_marks,
+        total_questions=total_questions,
     )
