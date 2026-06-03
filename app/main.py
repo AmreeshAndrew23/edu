@@ -106,7 +106,7 @@ async def health_check():
 @app.get("/health/db")
 async def health_db():
     from app.core.database import AsyncSessionLocal
-    from sqlalchemy import func
+    from sqlalchemy import func, select
     from app.models.exam import Exam
     from app.models.exam_blueprint import ExamBlueprint
     from app.models.question import Question

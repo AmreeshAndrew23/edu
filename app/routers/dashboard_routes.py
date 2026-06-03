@@ -228,9 +228,7 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
         .group_by(Question.topic_id, Topic.topic_name)
         .having(func.count(StudentAnswer.id) >= 3)
         .order_by(
-            func.sum(
-                func.cast(StudentAnswer.is_correct == False, func.Integer())  # noqa: E712
-            ).desc()
+            func.sum(case((StudentAnswer.is_correct == False, 1), else_=0)).desc()  # noqa: E712
         )
         .limit(3)
     )).all()
