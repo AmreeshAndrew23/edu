@@ -21,3 +21,5 @@ python-multipart
 openai
 
 httpx
+
+pypdf

@@ -1,6 +1,9 @@
-from typing import Literal
+import base64
+import io
+import json
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Form, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict
@@ -10,7 +13,9 @@ from app.models.question import Question
 from app.models.subject import Subject
 from app.models.topic import Topic
 from app.models.exam import Exam
+from app.services.open_ai_client import get_openai_client
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/questions", tags=["Questions"])
 
 _SUBJECT_KEY_TO_NAME = {
@@ -21,10 +26,63 @@ _SUBJECT_KEY_TO_NAME = {
 _CORE_SUBJECTS = ['Physics', 'Chemistry', 'Biology']
 _FULL_SUBJECT  = 'All Subjects'
 
+_SYSTEM_PROMPT = (
+    "You are a NEET question extractor. "
+    "Given content from a NEET exam paper, extract every MCQ question and return ONLY a JSON object "
+    "with a single key 'questions' whose value is an array. Each element must have:\n"
+    "  question_text (string), option_a, option_b, option_c, option_d (strings, no letter prefix),\n"
+    "  correct_option ('A'|'B'|'C'|'D'), explanation (string or null),\n"
+    "  topic_name (the closest NEET syllabus topic), difficulty ('easy'|'medium'|'hard').\n"
+    "Return ONLY valid JSON. No markdown, no commentary."
+)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _ai_extract_text(text: str) -> list[dict]:
+    client = get_openai_client()
+    resp = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user",   "content": text[:28000]},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=4096,
+    )
+    return json.loads(resp.choices[0].message.content).get("questions", [])
+
+
+async def _ai_extract_image(image_bytes: bytes, mime: str) -> list[dict]:
+    client = get_openai_client()
+    b64 = base64.b64encode(image_bytes).decode()
+    resp = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "text",      "text": _SYSTEM_PROMPT},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            ],
+        }],
+        response_format={"type": "json_object"},
+        temperature=0,
+        max_tokens=4096,
+    )
+    return json.loads(resp.choices[0].message.content).get("questions", [])
+
+
+def _pdf_to_text(content: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(content))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 class QuestionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: int
     exam_id: int
     topic_id: int
@@ -36,29 +94,14 @@ class QuestionResponse(BaseModel):
     difficulty_level: str | None
 
 
-class QuestionUploadItem(BaseModel):
-    question_text: str
-    option_a: str
-    option_b: str
-    option_c: str
-    option_d: str
-    correct_option: str           # 'A' | 'B' | 'C' | 'D'
-    explanation: str | None = None
-    topic_name: str
-    difficulty: str = 'medium'
-
-
-class QuestionUploadRequest(BaseModel):
-    subject: Literal['physics', 'chemistry', 'biology', 'full_neet']
-    year: int
-    questions: list[QuestionUploadItem]
-
-
 class UploadResult(BaseModel):
+    extracted: int
     uploaded: int
     skipped: int
     created_topics: list[str]
 
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[QuestionResponse])
 async def list_questions(
@@ -71,122 +114,158 @@ async def list_questions(
         query = query.where(Question.exam_id == exam_id)
     if topic_id:
         query = query.where(Question.topic_id == topic_id)
-    result = await db.execute(query)
-    return result.scalars().all()
+    return (await db.execute(query)).scalars().all()
 
 
 @router.post("/upload", response_model=UploadResult)
-async def upload_questions(payload: QuestionUploadRequest, db: AsyncSession = Depends(get_db)):
+async def upload_questions_file(
+    subject: str = Form(..., description="physics | chemistry | biology | full_neet"),
+    year: int = Form(..., description="NEET paper year, e.g. 2020"),
+    file: UploadFile = File(..., description="PDF, TXT, JPG, or PNG file"),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Bulk-upload NEET previous-year questions.
+    Upload a NEET question paper (PDF / TXT / JPG / PNG).
+    AI extracts MCQ questions and inserts them into the question bank.
 
-    - subject: physics | chemistry | biology | full_neet
-    - year: the NEET paper year (e.g. 2020)
-    - questions: array of MCQ objects with topic_name
-
-    For single subjects, unknown topics are auto-created.
-    For full_neet, topic_name must match an existing topic (search across all 3 subjects).
-    Duplicate question_text + topic_id combos are skipped.
+    Form fields:
+      - subject: physics | chemistry | biology | full_neet
+      - year: the NEET paper year (e.g. 2020)
+      - file: the paper file
     """
-    is_full = payload.subject == 'full_neet'
+    if subject not in ('physics', 'chemistry', 'biology', 'full_neet'):
+        raise HTTPException(400, "subject must be: physics | chemistry | biology | full_neet")
 
-    # ── Resolve exam and subject(s) ──────────────────────────────────────────
+    content      = await file.read()
+    fname        = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+
+    # ── Step 1: extract raw question dicts via AI ─────────────────────────────
+
+    if content_type.startswith("image/") or fname.endswith((".jpg", ".jpeg", ".png")):
+        mime = content_type if content_type.startswith("image/") else "image/jpeg"
+        raw = await _ai_extract_image(content, mime)
+
+    elif "pdf" in content_type or fname.endswith(".pdf"):
+        try:
+            text = _pdf_to_text(content)
+        except Exception as exc:
+            raise HTTPException(400, f"Could not read PDF: {exc}")
+        if not text.strip():
+            raise HTTPException(400, "PDF appears to be a scanned image — upload as JPG/PNG instead.")
+        raw = await _ai_extract_text(text)
+
+    elif "text" in content_type or fname.endswith(".txt"):
+        raw = await _ai_extract_text(content.decode("utf-8", errors="replace"))
+
+    else:
+        raise HTTPException(400, "Unsupported file type. Use PDF, TXT, JPG, or PNG.")
+
+    extracted = len(raw)
+    logger.info("Extracted %d questions from '%s' (subject=%s, year=%d)", extracted, fname, subject, year)
+
+    if not extracted:
+        return UploadResult(extracted=0, uploaded=0, skipped=0, created_topics=[])
+
+    # ── Step 2: resolve exam + topic map ─────────────────────────────────────
+
+    is_full = subject == 'full_neet'
 
     if is_full:
         full_sub = (await db.execute(
             select(Subject).where(Subject.name == _FULL_SUBJECT)
         )).scalar_one_or_none()
         if not full_sub:
-            raise HTTPException(400, "Full-exam subject row not found — ensure the seed has run.")
-
+            raise HTTPException(400, "Full-exam subject not found — ensure seed has run.")
         exam = (await db.execute(
-            select(Exam)
-            .where(Exam.subject_id == full_sub.id)
-            .order_by(Exam.exam_year.desc())
+            select(Exam).where(Exam.subject_id == full_sub.id).order_by(Exam.exam_year.desc())
         )).scalars().first()
-
-        # Pre-load topics from all 3 core subjects
-        core_sub_rows = (await db.execute(
-            select(Subject).where(Subject.name.in_(_CORE_SUBJECTS))
-        )).scalars().all()
-        core_sub_ids = [s.id for s in core_sub_rows]
-        topics_rows = (await db.execute(
+        core_sub_ids = [
+            s.id for s in (await db.execute(
+                select(Subject).where(Subject.name.in_(_CORE_SUBJECTS))
+            )).scalars().all()
+        ]
+        topic_rows = (await db.execute(
             select(Topic).where(Topic.subject_id.in_(core_sub_ids))
         )).scalars().all()
-        topic_map = {t.topic_name.lower(): t for t in topics_rows}
-        single_subject = None
-
+        single_sub = None
     else:
-        subject_name = _SUBJECT_KEY_TO_NAME[payload.subject]
+        sub_name = _SUBJECT_KEY_TO_NAME[subject]
         sub = (await db.execute(
-            select(Subject).where(Subject.name == subject_name)
+            select(Subject).where(Subject.name == sub_name)
         )).scalar_one_or_none()
         if not sub:
-            raise HTTPException(400, f"Subject '{subject_name}' not found — ensure the seed has run.")
-
+            raise HTTPException(400, f"Subject '{sub_name}' not found — ensure seed has run.")
         exam = (await db.execute(
-            select(Exam)
-            .where(Exam.subject_id == sub.id)
-            .order_by(Exam.exam_year.desc())
+            select(Exam).where(Exam.subject_id == sub.id).order_by(Exam.exam_year.desc())
         )).scalars().first()
-
-        topics_rows = (await db.execute(
+        topic_rows = (await db.execute(
             select(Topic).where(Topic.subject_id == sub.id)
         )).scalars().all()
-        topic_map = {t.topic_name.lower(): t for t in topics_rows}
-        single_subject = sub
+        single_sub = sub
 
     if not exam:
-        raise HTTPException(400, "No exam found for this subject — ensure the seed has run.")
+        raise HTTPException(400, "No exam found — ensure seed has run.")
 
-    # ── Insert questions ──────────────────────────────────────────────────────
+    topic_map = {t.topic_name.lower(): t for t in topic_rows}
 
-    uploaded = 0
-    skipped  = 0
+    # ── Step 3: insert questions ──────────────────────────────────────────────
+
+    uploaded: int = 0
+    skipped:  int = 0
     created_topics: list[str] = []
 
-    for q in payload.questions:
-        topic = topic_map.get(q.topic_name.strip().lower())
+    for q in raw:
+        required = ("question_text", "option_a", "option_b", "option_c", "option_d", "correct_option")
+        if not all(q.get(k) for k in required):
+            skipped += 1
+            continue
+
+        correct = str(q["correct_option"]).upper().strip()
+        if correct not in ("A", "B", "C", "D"):
+            skipped += 1
+            continue
+
+        topic_name = (q.get("topic_name") or "General").strip()
+        topic = topic_map.get(topic_name.lower())
 
         if not topic:
             if is_full:
-                # Can't infer subject for unknown topic in full_neet mode
                 skipped += 1
                 continue
-            # Auto-create topic under the single subject
-            topic = Topic(topic_name=q.topic_name.strip(), subject_id=single_subject.id)
+            topic = Topic(topic_name=topic_name, subject_id=single_sub.id)
             db.add(topic)
             await db.flush()
-            topic_map[q.topic_name.strip().lower()] = topic
-            created_topics.append(q.topic_name.strip())
+            topic_map[topic_name.lower()] = topic
+            created_topics.append(topic_name)
 
-        # Duplicate check (same text + topic)
-        exists = (await db.execute(
+        # Skip exact duplicate
+        dup = (await db.execute(
             select(Question.id).where(
-                Question.question_text == q.question_text,
+                Question.question_text == q["question_text"],
                 Question.topic_id == topic.id,
             )
         )).scalar_one_or_none()
-
-        if exists:
+        if dup:
             skipped += 1
             continue
 
         db.add(Question(
             exam_id=exam.id,
             topic_id=topic.id,
-            question_text=q.question_text,
-            option_a=q.option_a,
-            option_b=q.option_b,
-            option_c=q.option_c,
-            option_d=q.option_d,
-            correct_option=q.correct_option.upper(),
-            explanation=q.explanation,
-            difficulty_level=q.difficulty,
+            question_text=q["question_text"],
+            option_a=q["option_a"],
+            option_b=q["option_b"],
+            option_c=q["option_c"],
+            option_d=q["option_d"],
+            correct_option=correct,
+            explanation=q.get("explanation"),
+            difficulty_level=q.get("difficulty", "medium"),
             source='neet_paper',
-            neet_year=payload.year,
+            neet_year=year,
         ))
         uploaded += 1
 
     await db.commit()
-    return UploadResult(uploaded=uploaded, skipped=skipped, created_topics=created_topics)
+    logger.info("Upload done: extracted=%d uploaded=%d skipped=%d", extracted, uploaded, skipped)
+    return UploadResult(extracted=extracted, uploaded=uploaded, skipped=skipped, created_topics=created_topics)
