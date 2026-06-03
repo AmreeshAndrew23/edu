@@ -88,7 +88,11 @@ app = FastAPI(
 async def cors_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         return Response(status_code=200, headers=CORS_HEADERS)
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.error("Unhandled exception: %s", exc, exc_info=True)
+        response = Response(status_code=500, content="Internal Server Error")
     for key, value in CORS_HEADERS.items():
         response.headers[key] = value
     return response

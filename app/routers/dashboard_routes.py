@@ -2,7 +2,7 @@ import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func, cast, Date, Integer
+from sqlalchemy import select, func, cast, case, Date, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
@@ -174,8 +174,9 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
 
     # ── 3. Streak ────────────────────────────────────────────────────────────
     date_rows = (await db.execute(
-        select(cast(ExamSession.completed_at, Date).distinct().label("d"))
+        select(cast(ExamSession.completed_at, Date).label("d"))
         .where(*base_filter, ExamSession.completed_at.isnot(None))
+        .distinct()
         .order_by(cast(ExamSession.completed_at, Date).desc())
     )).all()
 
@@ -187,7 +188,7 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
         select(
             Subject.name.label("subject"),
             func.count(StudentAnswer.id).label("total"),
-            func.sum(cast(StudentAnswer.is_correct, Integer)).label("correct"),
+            func.sum(case((StudentAnswer.is_correct == True, 1), else_=0)).label("correct"),  # noqa: E712
         )
         .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
         .join(Question,    Question.id    == StudentAnswer.question_id)
@@ -218,9 +219,7 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
             Question.topic_id,
             Topic.topic_name,
             func.count(StudentAnswer.id).label("total"),
-            func.sum(
-                func.cast(StudentAnswer.is_correct == False, func.Integer())  # noqa: E712
-            ).label("wrong"),
+            func.sum(case((StudentAnswer.is_correct == False, 1), else_=0)).label("wrong"),  # noqa: E712
         )
         .join(StudentAnswer, StudentAnswer.question_id == Question.id)
         .join(ExamSession,   ExamSession.id == StudentAnswer.session_id)
