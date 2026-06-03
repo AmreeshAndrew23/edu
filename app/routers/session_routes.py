@@ -178,6 +178,73 @@ async def submit_exam_session(
     return await submit_session(db, session_id, payload)
 
 
+class MemoryRecallRequest(BaseModel):
+    student_id: int
+    limit: int = 20
+
+
+@router.post("/memory-recall", response_model=SessionStartResponse)
+async def start_memory_recall(
+    payload: MemoryRecallRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a quiz session from questions the student previously answered incorrectly.
+    Returns the same SessionStartResponse as /start so the frontend quiz flow is identical.
+    """
+    exam = (await db.execute(select(Exam).limit(1))).scalar_one_or_none()
+    if not exam:
+        raise HTTPException(status_code=404, detail="No exam found in database.")
+
+    # Distinct question IDs where student was wrong, most recently wrong first
+    wrong_ids = (await db.execute(
+        select(StudentAnswer.question_id)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .where(
+            ExamSession.student_id == payload.student_id,
+            ExamSession.status == "completed",
+            StudentAnswer.is_correct == False,          # noqa: E712
+            StudentAnswer.selected_option.isnot(None),  # answered, not skipped
+        )
+        .group_by(StudentAnswer.question_id)
+        .order_by(func.max(StudentAnswer.id).desc())    # most recently wrong first
+        .limit(payload.limit)
+    )).scalars().all()
+
+    if not wrong_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="no_wrong_answers",
+        )
+
+    questions = (await db.execute(
+        select(Question).where(Question.id.in_(wrong_ids))
+    )).scalars().all()
+
+    # Shuffle so the order isn't predictable every time
+    questions = list(questions)
+    random.shuffle(questions)
+
+    session = ExamSession(
+        student_id=payload.student_id,
+        exam_id=exam.id,
+        status="in_progress",
+        total_questions=len(questions),
+        started_at=datetime.utcnow(),
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    return SessionStartResponse(
+        session_id=session.id,
+        total_questions=session.total_questions,
+        exam_id=session.exam_id,
+        difficulty="memory_recall",
+        questions=[QuestionPayload.model_validate(q) for q in questions],
+    )
+
+
 @router.get("/{session_id}/results", response_model=SessionResultResponse)
 async def get_exam_results(
     session_id: int,
