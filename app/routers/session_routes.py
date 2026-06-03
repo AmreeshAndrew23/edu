@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.core.database import get_db
 from app.models.student_answer import StudentAnswer
@@ -25,6 +25,20 @@ class WeakTopic(BaseModel):
     total: int
     wrong: int
     accuracy: float  # 0–100
+
+
+class RecallQuestion(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    question_text: str
+    option_a: str
+    option_b: str
+    option_c: str
+    option_d: str
+    correct_option: str
+    explanation: str | None
+    topic_name: str
 
 
 @router.get("/weak-topics", response_model=list[WeakTopic])
@@ -68,6 +82,68 @@ async def get_weak_topics(
             total=r.total,
             wrong=r.wrong,
             accuracy=round((1 - r.wrong / r.total) * 100, 1),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/count")
+async def get_session_count(student_id: int, db: AsyncSession = Depends(get_db)):
+    """Total completed quiz sessions for a student (used to gate Weak Area Detection)."""
+    count = (await db.execute(
+        select(func.count())
+        .select_from(ExamSession)
+        .where(ExamSession.student_id == student_id)
+        .where(ExamSession.status == "completed")
+    )).scalar()
+    return {"count": count or 0}
+
+
+@router.get("/recall-questions", response_model=list[RecallQuestion])
+async def get_recall_questions(
+    student_id: int,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns a random sample of questions the student has already answered in
+    previous sessions — used as flashcard source for Memory Recall mode.
+    """
+    rows = (await db.execute(
+        select(
+            Question.id,
+            Question.question_text,
+            Question.option_a,
+            Question.option_b,
+            Question.option_c,
+            Question.option_d,
+            Question.correct_option,
+            Question.explanation,
+            Topic.topic_name,
+        )
+        .join(StudentAnswer, StudentAnswer.question_id == Question.id)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .join(Topic, Topic.id == Question.topic_id)
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.status == "completed",
+        )
+        .distinct()
+        .order_by(func.random())
+        .limit(limit)
+    )).all()
+
+    return [
+        RecallQuestion(
+            id=r.id,
+            question_text=r.question_text,
+            option_a=r.option_a,
+            option_b=r.option_b,
+            option_c=r.option_c,
+            option_d=r.option_d,
+            correct_option=r.correct_option,
+            explanation=r.explanation,
+            topic_name=r.topic_name,
         )
         for r in rows
     ]

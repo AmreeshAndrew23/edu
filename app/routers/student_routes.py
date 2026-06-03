@@ -14,3 +14,4 @@ async def register_student(
     db: AsyncSession = Depends(get_db)
 ):
     return await StudentService.register(db, payload)
+    
