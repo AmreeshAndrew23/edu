@@ -16,6 +16,7 @@ from app.routers.topic_routes import router as topic_router
 from app.routers.ai_routes import router as ai_router
 from app.routers.question_routes import router as question_router
 from app.routers.chat_routes import router as chat_router
+from app.routers.dashboard_routes import router as dashboard_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -126,3 +127,4 @@ app.include_router(topic_router)
 app.include_router(ai_router)
 app.include_router(question_router)
 app.include_router(chat_router)
+app.include_router(dashboard_router)
