@@ -119,16 +119,35 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
             )
         )
 
+    seen_sq = (
+        select(StudentAnswer.question_id)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .where(ExamSession.student_id == payload.student_id)
+        .distinct()
+    )
+
     questions = (await db.execute(
-        select(Question).where(*q_filters).order_by(func.random()).limit(count)
+        select(Question)
+        .where(*q_filters, Question.id.notin_(seen_sq))
+        .order_by(func.random())
+        .limit(count)
     )).scalars().all()
 
     if not questions:
-        logger.info("No questions found — auto-generating for exam_id=%d difficulty=%s", payload.exam_id, difficulty)
+        logger.info("No unseen questions — generating more for exam_id=%d difficulty=%s", payload.exam_id, difficulty)
         try:
             await _ensure_questions(db, exam, difficulty)
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f"Question generation failed: {exc}")
+        questions = (await db.execute(
+            select(Question)
+            .where(*q_filters, Question.id.notin_(seen_sq))
+            .order_by(func.random())
+            .limit(count)
+        )).scalars().all()
+
+    if not questions:
+        # All questions in pool already seen — repeat from full pool
         questions = (await db.execute(
             select(Question).where(*q_filters).order_by(func.random()).limit(count)
         )).scalars().all()
