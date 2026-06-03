@@ -93,19 +93,19 @@ def _compute_streak(session_dates: set[date]) -> int:
     return streak
 
 
-def _neet_estimate(subject_perf: list[SubjectPerf]) -> NeetEstimate:
-    perf_map = {sp.subject: sp.accuracy / 100 for sp in subject_perf}
-    estimated = 0.0
-    for subj, neet_q in _NEET_Q.items():
-        acc = perf_map.get(subj, 0.5)   # default 50% if no data
-        # Assume 95 % attempt rate
-        attempted = neet_q * 0.95
-        correct   = acc * attempted
-        wrong     = (1 - acc) * attempted
-        estimated += correct * 4 - wrong * 1
+def _neet_estimate(correct: int, wrong: int, total: int) -> NeetEstimate:
+    """
+    Scale the student's actual last-50-question performance to /720.
+    Formula: (correct*4 - wrong*1) / (total*4)  × 720
+    """
+    if total == 0:
+        score = 0
+    else:
+        actual_marks = correct * 4 - wrong * 1
+        max_marks    = total * 4
+        score = max(0, min(_NEET_MAX, round(actual_marks / max_marks * _NEET_MAX)))
 
-    score = max(0, min(_NEET_MAX, round(estimated)))
-    pct   = round(score / _NEET_MAX * 100, 1)
+    pct = round(score / _NEET_MAX * 100, 1)
 
     tier_label = tier_key = ""
     for cutoff, label, key in _CUTOFFS:
@@ -113,7 +113,6 @@ def _neet_estimate(subject_perf: list[SubjectPerf]) -> NeetEstimate:
             tier_label, tier_key = label, key
             break
 
-    # Next milestone
     message = "Targeting top medical colleges — keep it up!"
     for cutoff, label, _ in reversed(_CUTOFFS):
         if cutoff > score:
@@ -278,8 +277,26 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
             marks=marks,
         ))
 
-    # ── 7. NEET score estimate ────────────────────────────────────────────────
-    neet_estimate = _neet_estimate(subject_perf)
+    # ── 7. NEET score estimate (last 50 answered questions, scaled to /720) ────
+    last50_subq = (
+        select(StudentAnswer.is_correct)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .where(*base_filter, StudentAnswer.selected_option.isnot(None))
+        .order_by(StudentAnswer.id.desc())
+        .limit(50)
+        .subquery()
+    )
+    n50_row = (await db.execute(
+        select(
+            func.sum(case((last50_subq.c.is_correct == True, 1), else_=0)).label("correct"),  # noqa: E712
+            func.count().label("total"),
+        ).select_from(last50_subq)
+    )).one()
+
+    n50_correct = n50_row.correct or 0
+    n50_total   = n50_row.total   or 0
+    n50_wrong   = n50_total - n50_correct
+    neet_estimate = _neet_estimate(n50_correct, n50_wrong, n50_total)
 
     return DashboardStats(
         total_sessions=total_sessions,
