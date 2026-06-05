@@ -79,6 +79,41 @@ def _pdf_to_text(content: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+async def _scanned_pdf_to_questions(content: bytes) -> list[dict]:
+    """Render each page of a scanned PDF as an image, extract MCQs via GPT-4o vision."""
+    import fitz  # pymupdf
+
+    doc = fitz.open(stream=content, filetype="pdf")
+    # Render all pages at 2× zoom (≈144 DPI) for legible text
+    pages_png: list[bytes] = []
+    for page_num in range(len(doc)):
+        pix = doc[page_num].get_pixmap(matrix=fitz.Matrix(2, 2))
+        pages_png.append(pix.tobytes("png"))
+
+    client = get_openai_client()
+    all_questions: list[dict] = []
+    BATCH = 3  # pages per GPT-4o call
+
+    for i in range(0, len(pages_png), BATCH):
+        batch = pages_png[i:i + BATCH]
+        parts: list[dict] = [{"type": "text", "text": _SYSTEM_PROMPT}]
+        for img in batch:
+            b64 = base64.b64encode(img).decode()
+            parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
+        resp = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": parts}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=4096,
+        )
+        batch_qs = json.loads(resp.choices[0].message.content).get("questions", [])
+        all_questions.extend(batch_qs)
+        logger.info("Scanned PDF batch %d-%d: extracted %d questions", i + 1, i + len(batch), len(batch_qs))
+
+    return all_questions
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 class QuestionResponse(BaseModel):
@@ -152,8 +187,14 @@ async def upload_questions_file(
         except Exception as exc:
             raise HTTPException(400, f"Could not read PDF: {exc}")
         if not text.strip():
-            raise HTTPException(400, "PDF appears to be a scanned image — upload as JPG/PNG instead.")
-        raw = await _ai_extract_text(text)
+            # Scanned / image-based PDF — render pages and use vision
+            logger.info("Scanned PDF detected — rendering pages via pymupdf")
+            try:
+                raw = await _scanned_pdf_to_questions(content)
+            except Exception as exc:
+                raise HTTPException(400, f"Could not process scanned PDF: {exc}")
+        else:
+            raw = await _ai_extract_text(text)
 
     elif "text" in content_type or fname.endswith(".txt"):
         raw = await _ai_extract_text(content.decode("utf-8", errors="replace"))
