@@ -255,6 +255,7 @@ async def upload_questions_file(
     uploaded: int = 0
     skipped:  int = 0
     created_topics: list[str] = []
+    order_counter: int = 0  # tracks position within this paper
 
     for q in raw:
         required = ("question_text", "option_a", "option_b", "option_c", "option_d", "correct_option")
@@ -291,6 +292,7 @@ async def upload_questions_file(
             skipped += 1
             continue
 
+        order_counter += 1
         db.add(Question(
             exam_id=exam.id,
             topic_id=topic.id,
@@ -304,6 +306,7 @@ async def upload_questions_file(
             difficulty_level=q.get("difficulty", "medium"),
             source='neet_paper',
             neet_year=year,
+            paper_order=order_counter,
         ))
         uploaded += 1
 

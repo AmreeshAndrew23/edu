@@ -298,7 +298,9 @@ async def start_rapid_revision(
         )
 
     questions = (await db.execute(
-        select(Question).where(*q_filters).order_by(func.random())
+        select(Question)
+        .where(*q_filters)
+        .order_by(Question.paper_order.asc().nullsfirst(), Question.id.asc())
     )).scalars().all()
 
     if not questions:

@@ -53,6 +53,9 @@ class Question(Base, TimestampMixin):
     # Year the NEET paper was published (null for AI-generated questions)
     neet_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Position of this question within its source paper (1-based; null for AI-generated)
+    paper_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # ── Relationships ────────────────────────────────────────────────────────
 
     exam = relationship("Exam", back_populates="questions")
