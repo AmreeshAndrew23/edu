@@ -18,22 +18,18 @@ from app.services.open_ai_client import get_openai_client
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/questions", tags=["Questions"])
 
-_SUBJECT_KEY_TO_NAME = {
-    'physics':   'Physics',
-    'chemistry': 'Chemistry',
-    'biology':   'Biology',
-}
 _CORE_SUBJECTS = ['Physics', 'Chemistry', 'Biology']
 _FULL_SUBJECT  = 'All Subjects'
 
 _SYSTEM_PROMPT = (
     "You are a NEET question extractor. "
-    "Given content from a NEET exam paper, extract every MCQ question and return ONLY a JSON object "
+    "Given content from a NEET exam paper, extract EVERY MCQ question and return ONLY a JSON object "
     "with a single key 'questions' whose value is an array. Each element must have:\n"
     "  question_text (string), option_a, option_b, option_c, option_d (strings, no letter prefix),\n"
     "  correct_option ('A'|'B'|'C'|'D'), explanation (string or null),\n"
-    "  topic_name (the closest NEET syllabus topic), difficulty ('easy'|'medium'|'hard').\n"
-    "Return ONLY valid JSON. No markdown, no commentary."
+    "  subject (exactly one of: 'Physics', 'Chemistry', 'Biology'),\n"
+    "  topic_name (the closest NEET syllabus topic name), difficulty ('easy'|'medium'|'hard').\n"
+    "Do NOT skip any question. Return ONLY valid JSON. No markdown, no commentary."
 )
 
 
@@ -154,23 +150,18 @@ async def list_questions(
 
 @router.post("/upload", response_model=UploadResult)
 async def upload_questions_file(
-    subject: str = Form(..., description="physics | chemistry | biology | full_neet"),
-    year: int = Form(..., description="NEET paper year, e.g. 2020"),
-    file: UploadFile = File(..., description="PDF, TXT, JPG, or PNG file"),
+    year: int = Form(..., description="NEET paper year, e.g. 2023"),
+    file: UploadFile = File(..., description="PDF, TXT, JPG, or PNG of the NEET paper"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Upload a NEET question paper (PDF / TXT / JPG / PNG).
-    AI extracts MCQ questions and inserts them into the question bank.
+    Upload a NEET previous-year question paper. Only two fields needed:
+      - year: the NEET paper year (e.g. 2023)
+      - file: PDF, TXT, JPG, or PNG
 
-    Form fields:
-      - subject: physics | chemistry | biology | full_neet
-      - year: the NEET paper year (e.g. 2020)
-      - file: the paper file
+    AI extracts every MCQ, auto-detects subject and topic, and inserts all
+    questions into the bank tagged with source='neet_paper'.
     """
-    if subject not in ('physics', 'chemistry', 'biology', 'full_neet'):
-        raise HTTPException(400, "subject must be: physics | chemistry | biology | full_neet")
-
     content      = await file.read()
     fname        = (file.filename or "").lower()
     content_type = (file.content_type or "").lower()
@@ -187,7 +178,6 @@ async def upload_questions_file(
         except Exception as exc:
             raise HTTPException(400, f"Could not read PDF: {exc}")
         if not text.strip():
-            # Scanned / image-based PDF — render pages and use vision
             logger.info("Scanned PDF detected — rendering pages via pymupdf")
             try:
                 raw = await _scanned_pdf_to_questions(content)
@@ -203,59 +193,47 @@ async def upload_questions_file(
         raise HTTPException(400, "Unsupported file type. Use PDF, TXT, JPG, or PNG.")
 
     extracted = len(raw)
-    logger.info("Extracted %d questions from '%s' (subject=%s, year=%d)", extracted, fname, subject, year)
+    logger.info("Extracted %d questions from '%s' year=%d", extracted, fname, year)
 
     if not extracted:
         return UploadResult(extracted=0, uploaded=0, skipped=0, created_topics=[])
 
-    # ── Step 2: resolve exam + topic map ─────────────────────────────────────
+    # ── Step 2: resolve exam, subjects, topics ────────────────────────────────
 
-    is_full = subject == 'full_neet'
+    full_sub = (await db.execute(
+        select(Subject).where(Subject.name == _FULL_SUBJECT)
+    )).scalar_one_or_none()
+    if not full_sub:
+        raise HTTPException(400, "Full-exam subject not found — ensure seed has run.")
 
-    if is_full:
-        full_sub = (await db.execute(
-            select(Subject).where(Subject.name == _FULL_SUBJECT)
-        )).scalar_one_or_none()
-        if not full_sub:
-            raise HTTPException(400, "Full-exam subject not found — ensure seed has run.")
-        exam = (await db.execute(
-            select(Exam).where(Exam.subject_id == full_sub.id).order_by(Exam.exam_year.desc())
-        )).scalars().first()
-        core_sub_ids = [
-            s.id for s in (await db.execute(
-                select(Subject).where(Subject.name.in_(_CORE_SUBJECTS))
-            )).scalars().all()
-        ]
-        topic_rows = (await db.execute(
-            select(Topic).where(Topic.subject_id.in_(core_sub_ids))
-        )).scalars().all()
-        single_sub = None
-    else:
-        sub_name = _SUBJECT_KEY_TO_NAME[subject]
-        sub = (await db.execute(
-            select(Subject).where(Subject.name == sub_name)
-        )).scalar_one_or_none()
-        if not sub:
-            raise HTTPException(400, f"Subject '{sub_name}' not found — ensure seed has run.")
-        exam = (await db.execute(
-            select(Exam).where(Exam.subject_id == sub.id).order_by(Exam.exam_year.desc())
-        )).scalars().first()
-        topic_rows = (await db.execute(
-            select(Topic).where(Topic.subject_id == sub.id)
-        )).scalars().all()
-        single_sub = sub
-
+    exam = (await db.execute(
+        select(Exam).where(Exam.subject_id == full_sub.id).order_by(Exam.exam_year.desc())
+    )).scalars().first()
     if not exam:
         raise HTTPException(400, "No exam found — ensure seed has run.")
 
-    topic_map = {t.topic_name.lower(): t for t in topic_rows}
+    # Map lowercase subject name → Subject row  (Physics, Chemistry, Biology)
+    core_subs: dict[str, Subject] = {
+        s.name.lower(): s for s in (await db.execute(
+            select(Subject).where(Subject.name.in_(_CORE_SUBJECTS))
+        )).scalars().all()
+    }
+    fallback_sub = core_subs.get('biology') or next(iter(core_subs.values()))
+
+    # Map (subject_id, topic_name_lower) → Topic
+    existing_topics = (await db.execute(
+        select(Topic).where(Topic.subject_id.in_([s.id for s in core_subs.values()]))
+    )).scalars().all()
+    topic_map: dict[tuple[int, str], Topic] = {
+        (t.subject_id, t.topic_name.lower()): t for t in existing_topics
+    }
 
     # ── Step 3: insert questions ──────────────────────────────────────────────
 
     uploaded: int = 0
     skipped:  int = 0
     created_topics: list[str] = []
-    order_counter: int = 0  # tracks position within this paper
+    order_counter: int = 0
 
     for q in raw:
         required = ("question_text", "option_a", "option_b", "option_c", "option_d", "correct_option")
@@ -268,17 +246,19 @@ async def upload_questions_file(
             skipped += 1
             continue
 
-        topic_name = (q.get("topic_name") or "General").strip()
-        topic = topic_map.get(topic_name.lower())
+        # Resolve subject from AI response; fall back to Biology
+        ai_subject = (q.get("subject") or "").strip().lower()
+        sub = core_subs.get(ai_subject) or fallback_sub
 
+        # Find or create topic under that subject
+        topic_name = (q.get("topic_name") or "General").strip()
+        topic_key  = (sub.id, topic_name.lower())
+        topic = topic_map.get(topic_key)
         if not topic:
-            if is_full:
-                skipped += 1
-                continue
-            topic = Topic(topic_name=topic_name, subject_id=single_sub.id)
+            topic = Topic(topic_name=topic_name, subject_id=sub.id)
             db.add(topic)
             await db.flush()
-            topic_map[topic_name.lower()] = topic
+            topic_map[topic_key] = topic
             created_topics.append(topic_name)
 
         # Skip exact duplicate
