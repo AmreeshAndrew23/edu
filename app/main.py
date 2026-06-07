@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -71,8 +70,9 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("Migration skipped: %s — %s", _sql[:60], exc)
 
-    asyncio.create_task(_background_seed())
-    logger.info("=== Seed task scheduled ===")
+    logger.info("=== Running seed ===")
+    await _background_seed()
+    logger.info("=== Seed complete — server ready ===")
 
     yield
 
