@@ -12,6 +12,7 @@ from app.models.subject import Subject
 from app.models.topic import Topic
 from app.models.exam import Exam
 from app.models.exam_blueprint import ExamBlueprint
+from app.seed.location_seed import seed_locations
 
 
 # ── Subjects ──────────────────────────────────────────────────────────────────
@@ -219,6 +220,7 @@ BLUEPRINT_CONFIG: dict[str, dict[str, tuple[int, str]]] = {
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 async def seed_all(db: AsyncSession) -> None:
+    await seed_locations(db)
     subject_map = await _seed_subjects(db)
     topic_map = await _seed_topics(db, subject_map)
     exam_map = await _seed_exams(db, subject_map)
