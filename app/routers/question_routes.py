@@ -13,6 +13,7 @@ from app.models.question import Question
 from app.models.subject import Subject
 from app.models.topic import Topic
 from app.models.exam import Exam
+from app.models.ai_usage_log import AiUsageLog
 from app.services.open_ai_client import get_openai_client
 
 logger = logging.getLogger(__name__)
@@ -33,9 +34,15 @@ _SYSTEM_PROMPT = (
 )
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+def _cost(model: str, prompt: int, completion: int) -> float:
+    rates = {"gpt-4o-mini": (0.15, 0.60), "gpt-4o": (2.50, 10.00)}
+    inp, out = rates.get(model, (0, 0))
+    return round((prompt * inp + completion * out) / 1_000_000, 6)
 
-async def _ai_extract_text(text: str) -> list[dict]:
+
+# ── AI helpers — each returns (questions, usage) ──────────────────────────────
+
+async def _ai_extract_text(text: str) -> tuple[list[dict], object]:
     client = get_openai_client()
     resp = await client.chat.completions.create(
         model="gpt-4o-mini",
@@ -47,10 +54,10 @@ async def _ai_extract_text(text: str) -> list[dict]:
         temperature=0,
         max_tokens=4096,
     )
-    return json.loads(resp.choices[0].message.content).get("questions", [])
+    return json.loads(resp.choices[0].message.content).get("questions", []), resp.usage
 
 
-async def _ai_extract_image(image_bytes: bytes, mime: str) -> list[dict]:
+async def _ai_extract_image(image_bytes: bytes, mime: str) -> tuple[list[dict], object]:
     client = get_openai_client()
     b64 = base64.b64encode(image_bytes).decode()
     resp = await client.chat.completions.create(
@@ -66,7 +73,7 @@ async def _ai_extract_image(image_bytes: bytes, mime: str) -> list[dict]:
         temperature=0,
         max_tokens=4096,
     )
-    return json.loads(resp.choices[0].message.content).get("questions", [])
+    return json.loads(resp.choices[0].message.content).get("questions", []), resp.usage
 
 
 def _pdf_to_text(content: bytes) -> str:
@@ -75,12 +82,13 @@ def _pdf_to_text(content: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-async def _scanned_pdf_to_questions(content: bytes) -> list[dict]:
-    """Render each page of a scanned PDF as an image, extract MCQs via GPT-4o vision."""
+async def _scanned_pdf_to_questions(content: bytes) -> tuple[list[dict], list[object]]:
+    """Render each page as an image, extract MCQs via GPT-4o vision.
+    Returns (all_questions, list_of_usages_per_batch).
+    """
     import fitz  # pymupdf
 
     doc = fitz.open(stream=content, filetype="pdf")
-    # Render all pages at 2× zoom (≈144 DPI) for legible text
     pages_png: list[bytes] = []
     for page_num in range(len(doc)):
         pix = doc[page_num].get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -88,7 +96,8 @@ async def _scanned_pdf_to_questions(content: bytes) -> list[dict]:
 
     client = get_openai_client()
     all_questions: list[dict] = []
-    BATCH = 3  # pages per GPT-4o call
+    all_usages: list[object] = []
+    BATCH = 3
 
     for i in range(0, len(pages_png), BATCH):
         batch = pages_png[i:i + BATCH]
@@ -105,9 +114,10 @@ async def _scanned_pdf_to_questions(content: bytes) -> list[dict]:
         )
         batch_qs = json.loads(resp.choices[0].message.content).get("questions", [])
         all_questions.extend(batch_qs)
+        all_usages.append(resp.usage)
         logger.info("Scanned PDF batch %d-%d: extracted %d questions", i + 1, i + len(batch), len(batch_qs))
 
-    return all_questions
+    return all_questions, all_usages
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -154,23 +164,25 @@ async def upload_questions_file(
     file: UploadFile = File(..., description="PDF, TXT, JPG, or PNG of the NEET paper"),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Upload a NEET previous-year question paper. Only two fields needed:
-      - year: the NEET paper year (e.g. 2023)
-      - file: PDF, TXT, JPG, or PNG
-
-    AI extracts every MCQ, auto-detects subject and topic, and inserts all
-    questions into the bank tagged with source='neet_paper'.
-    """
     content      = await file.read()
     fname        = (file.filename or "").lower()
     content_type = (file.content_type or "").lower()
+    context_str  = f"NEET {year} upload — {fname}"
 
     # ── Step 1: extract raw question dicts via AI ─────────────────────────────
 
     if content_type.startswith("image/") or fname.endswith((".jpg", ".jpeg", ".png")):
         mime = content_type if content_type.startswith("image/") else "image/jpeg"
-        raw = await _ai_extract_image(content, mime)
+        raw, usage = await _ai_extract_image(content, mime)
+        db.add(AiUsageLog(
+            endpoint="neet_upload",
+            model="gpt-4o",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            estimated_cost_usd=_cost("gpt-4o", usage.prompt_tokens, usage.completion_tokens),
+            context=context_str,
+        ))
 
     elif "pdf" in content_type or fname.endswith(".pdf"):
         try:
@@ -180,14 +192,42 @@ async def upload_questions_file(
         if not text.strip():
             logger.info("Scanned PDF detected — rendering pages via pymupdf")
             try:
-                raw = await _scanned_pdf_to_questions(content)
+                raw, usages = await _scanned_pdf_to_questions(content)
             except Exception as exc:
                 raise HTTPException(400, f"Could not process scanned PDF: {exc}")
+            for u in usages:
+                db.add(AiUsageLog(
+                    endpoint="neet_upload",
+                    model="gpt-4o",
+                    prompt_tokens=u.prompt_tokens,
+                    completion_tokens=u.completion_tokens,
+                    total_tokens=u.total_tokens,
+                    estimated_cost_usd=_cost("gpt-4o", u.prompt_tokens, u.completion_tokens),
+                    context=context_str,
+                ))
         else:
-            raw = await _ai_extract_text(text)
+            raw, usage = await _ai_extract_text(text)
+            db.add(AiUsageLog(
+                endpoint="neet_upload",
+                model="gpt-4o-mini",
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+                estimated_cost_usd=_cost("gpt-4o-mini", usage.prompt_tokens, usage.completion_tokens),
+                context=context_str,
+            ))
 
     elif "text" in content_type or fname.endswith(".txt"):
-        raw = await _ai_extract_text(content.decode("utf-8", errors="replace"))
+        raw, usage = await _ai_extract_text(content.decode("utf-8", errors="replace"))
+        db.add(AiUsageLog(
+            endpoint="neet_upload",
+            model="gpt-4o-mini",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            estimated_cost_usd=_cost("gpt-4o-mini", usage.prompt_tokens, usage.completion_tokens),
+            context=context_str,
+        ))
 
     else:
         raise HTTPException(400, "Unsupported file type. Use PDF, TXT, JPG, or PNG.")
@@ -196,6 +236,7 @@ async def upload_questions_file(
     logger.info("Extracted %d questions from '%s' year=%d", extracted, fname, year)
 
     if not extracted:
+        await db.commit()
         return UploadResult(extracted=0, uploaded=0, skipped=0, created_topics=[])
 
     # ── Step 2: resolve exam, subjects, topics ────────────────────────────────
@@ -212,7 +253,6 @@ async def upload_questions_file(
     if not exam:
         raise HTTPException(400, "No exam found — ensure seed has run.")
 
-    # Map lowercase subject name → Subject row  (Physics, Chemistry, Biology)
     core_subs: dict[str, Subject] = {
         s.name.lower(): s for s in (await db.execute(
             select(Subject).where(Subject.name.in_(_CORE_SUBJECTS))
@@ -220,7 +260,6 @@ async def upload_questions_file(
     }
     fallback_sub = core_subs.get('biology') or next(iter(core_subs.values()))
 
-    # Map (subject_id, topic_name_lower) → Topic
     existing_topics = (await db.execute(
         select(Topic).where(Topic.subject_id.in_([s.id for s in core_subs.values()]))
     )).scalars().all()
@@ -246,11 +285,9 @@ async def upload_questions_file(
             skipped += 1
             continue
 
-        # Resolve subject from AI response; fall back to Biology
         ai_subject = (q.get("subject") or "").strip().lower()
         sub = core_subs.get(ai_subject) or fallback_sub
 
-        # Find or create topic under that subject
         topic_name = (q.get("topic_name") or "General").strip()
         topic_key  = (sub.id, topic_name.lower())
         topic = topic_map.get(topic_key)
@@ -261,7 +298,6 @@ async def upload_questions_file(
             topic_map[topic_key] = topic
             created_topics.append(topic_name)
 
-        # Skip exact duplicate
         dup = (await db.execute(
             select(Question.id).where(
                 Question.question_text == q["question_text"],

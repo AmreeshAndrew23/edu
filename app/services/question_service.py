@@ -27,7 +27,7 @@ async def generate_questions(
     topic_name: str,
     difficulty: str,
     count: int,
-) -> list[dict]:
+) -> tuple[list[dict], object]:  # (questions, usage)
     prompt = f"""Generate {count} NEET-style multiple-choice questions.
 
 Exam: {exam_name}
@@ -72,5 +72,4 @@ correct_option must be exactly one character: A, B, C, or D — vary it across q
             content = content[4:]
 
     questions = json.loads(content)
-    # Shuffle options server-side as a second layer of guarantee
-    return [_shuffle_options(q) for q in questions]
+    return [_shuffle_options(q) for q in questions], response.usage

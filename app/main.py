@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     from app.core.database import engine, Base
     from app.models import (  # noqa: F401
         Country, State, Student, Subject, Topic,
-        Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog,
+        Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog, AiUsageLog,
     )
 
     # Retry DB connection — Railway PostgreSQL may not be ready immediately

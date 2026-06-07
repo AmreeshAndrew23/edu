@@ -13,6 +13,7 @@ from app.models.question import Question
 from app.models.exam_session import ExamSession
 from app.models.student_answer import StudentAnswer
 from app.models.student import Student
+from app.models.ai_usage_log import AiUsageLog
 from app.schemas.session_schema import (
     SessionStartRequest,
     SubmitAnswersRequest,
@@ -71,7 +72,7 @@ async def _ensure_questions(
 
         logger.info("Auto-generating %d %s questions for topic '%s'", needed, difficulty, topic.topic_name)
         try:
-            generated = await generate_questions(
+            generated, usage = await generate_questions(
                 exam_name=exam.exam_name,
                 subject_name=subject.name,
                 topic_name=topic.topic_name,
@@ -81,6 +82,18 @@ async def _ensure_questions(
         except Exception as exc:
             logger.error("Question generation failed for topic '%s': %s", topic.topic_name, exc)
             continue  # skip this topic, don't abort everything
+
+        db.add(AiUsageLog(
+            endpoint="question_generation",
+            model="gpt-4o-mini",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            estimated_cost_usd=round(
+                (usage.prompt_tokens * 0.15 + usage.completion_tokens * 0.60) / 1_000_000, 6
+            ),
+            context=f"{topic.topic_name} | {difficulty} | {exam.exam_name}",
+        ))
 
         required = {"question_text", "option_a", "option_b", "option_c", "option_d", "correct_option"}
         for q in generated:
