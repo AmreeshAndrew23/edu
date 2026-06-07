@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -47,10 +48,19 @@ async def lifespan(app: FastAPI):
         Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog,
     )
 
-    logger.info("=== Creating any missing DB tables ===")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    logger.info("=== DB tables ready ===")
+    # Retry DB connection — Railway PostgreSQL may not be ready immediately
+    logger.info("=== Waiting for DB connection ===")
+    for _attempt in range(10):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("=== DB tables ready ===")
+            break
+        except Exception as exc:
+            logger.warning("DB not ready (attempt %d/10): %s", _attempt + 1, exc)
+            if _attempt == 9:
+                raise
+            await asyncio.sleep(3)
 
     # Run each migration independently — a failing ALTER won't roll back table creation
     _migrations = [
