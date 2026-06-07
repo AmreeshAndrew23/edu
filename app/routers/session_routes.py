@@ -19,6 +19,7 @@ from app.schemas.session_schema import (
     SessionStartResponse,
     SubmitAnswersRequest,
     SessionResultResponse,
+    QuestionPayload,
 )
 from app.services.session_service import start_session, submit_session, get_session_results
 

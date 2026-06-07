@@ -31,11 +31,18 @@ DIFFICULTY_COUNTS: dict[str, int] = {
 }
 
 
-async def _ensure_questions(db: AsyncSession, exam: Exam, difficulty: str) -> None:
-    """Generate questions via OpenAI for any topics in this exam that are missing them."""
+async def _ensure_questions(
+    db: AsyncSession,
+    exam: Exam,
+    difficulty: str,
+    topic_id: int | None = None,
+) -> None:
+    """Generate questions via OpenAI for topics in this exam that are below blueprint quota.
+    Pass topic_id to restrict generation to that topic only (much faster for topic drills).
+    """
     from app.services.question_service import generate_questions
 
-    rows = (await db.execute(
+    bp_query = (
         select(ExamBlueprint, Topic, Subject)
         .join(Topic, ExamBlueprint.topic_id == Topic.id)
         .join(Subject, Topic.subject_id == Subject.id)
@@ -43,7 +50,11 @@ async def _ensure_questions(db: AsyncSession, exam: Exam, difficulty: str) -> No
             ExamBlueprint.exam_id == exam.id,
             ExamBlueprint.difficulty_level == difficulty,
         )
-    )).all()
+    )
+    if topic_id:
+        bp_query = bp_query.where(ExamBlueprint.topic_id == topic_id)
+
+    rows = (await db.execute(bp_query)).all()
 
     for bp, topic, subject in rows:
         existing = (await db.execute(
@@ -69,7 +80,7 @@ async def _ensure_questions(db: AsyncSession, exam: Exam, difficulty: str) -> No
             )
         except Exception as exc:
             logger.error("Question generation failed for topic '%s': %s", topic.topic_name, exc)
-            raise  # bubble up so caller gets the real error
+            continue  # skip this topic, don't abort everything
 
         required = {"question_text", "option_a", "option_b", "option_c", "option_d", "correct_option"}
         for q in generated:
@@ -134,11 +145,9 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     )).scalars().all()
 
     if not questions:
-        logger.info("No unseen questions — generating more for exam_id=%d difficulty=%s", payload.exam_id, difficulty)
-        try:
-            await _ensure_questions(db, exam, difficulty)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Question generation failed: {exc}")
+        logger.info("No unseen questions — generating more for exam_id=%d topic_id=%s difficulty=%s",
+                    payload.exam_id, payload.topic_id, difficulty)
+        await _ensure_questions(db, exam, difficulty, topic_id=payload.topic_id)
         questions = (await db.execute(
             select(Question)
             .where(*q_filters, Question.id.notin_(seen_sq))
