@@ -6,6 +6,7 @@ from app.models.exam import Exam
 from app.models.topic import Topic
 from app.models.subject import Subject
 from app.models.question import Question
+from app.models.ai_usage_log import AiUsageLog
 from app.services.question_service import generate_questions
 
 router = APIRouter(prefix="/ai", tags=["AI"])
@@ -37,13 +38,25 @@ async def generate_ai_questions(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
-    generated = await generate_questions(
+    generated, usage = await generate_questions(
         exam_name=exam.exam_name,
         subject_name=subject.name,
         topic_name=topic.topic_name,
         difficulty=difficulty,
         count=question_count,
     )
+
+    db.add(AiUsageLog(
+        endpoint="ai_generate_questions",
+        model="gpt-4o-mini",
+        prompt_tokens=usage.prompt_tokens,
+        completion_tokens=usage.completion_tokens,
+        total_tokens=usage.total_tokens,
+        estimated_cost_usd=round(
+            (usage.prompt_tokens * 0.15 + usage.completion_tokens * 0.60) / 1_000_000, 6
+        ),
+        context=f"{subject.name} | {topic.topic_name} | {difficulty}",
+    ))
 
     saved: list[dict] = []
 
