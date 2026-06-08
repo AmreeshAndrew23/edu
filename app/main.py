@@ -120,6 +120,40 @@ async def root():
     }
 
 
+@app.get("/debug/blueprints")
+async def debug_blueprints(db: AsyncSession = Depends(get_db)):
+    """Debug endpoint to check what blueprints exist in DB"""
+    from sqlalchemy import func
+    from app.models.exam import Exam
+    from app.models.exam_blueprint import ExamBlueprint
+    from app.models.subject import Subject
+    from app.models.topic import Topic
+
+    # Get all exams
+    exams = (await db.execute(select(Exam).order_by(Exam.exam_year.desc()))).scalars().all()
+
+    result = {}
+    for exam in exams:
+        # Count blueprints per exam per subject
+        subjects_data = (await db.execute(
+            select(
+                Subject.name,
+                func.count(ExamBlueprint.id).label("bp_count")
+            )
+            .join(Topic, Topic.subject_id == Subject.id)
+            .join(ExamBlueprint, ExamBlueprint.topic_id == Topic.id)
+            .where(ExamBlueprint.exam_id == exam.id)
+            .group_by(Subject.name)
+        )).all()
+
+        result[f"{exam.exam_name} {exam.exam_year}"] = {
+            "id": exam.id,
+            "subjects": {name: count for name, count in subjects_data}
+        }
+
+    return result
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
