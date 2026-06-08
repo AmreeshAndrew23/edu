@@ -220,11 +220,31 @@ BLUEPRINT_CONFIG: dict[str, dict[str, tuple[int, str]]] = {
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 async def seed_all(db: AsyncSession) -> None:
-    await seed_locations(db)
-    subject_map = await _seed_subjects(db)
-    topic_map = await _seed_topics(db, subject_map)
-    exam_map = await _seed_exams(db, subject_map)
-    await _seed_blueprints(db, subject_map, topic_map, exam_map)
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        log.info("Seeding locations...")
+        await seed_locations(db)
+        log.info("✓ Locations seeded")
+
+        log.info("Seeding subjects...")
+        subject_map = await _seed_subjects(db)
+        log.info(f"✓ Subjects seeded: {list(subject_map.keys())}")
+
+        log.info("Seeding topics...")
+        topic_map = await _seed_topics(db, subject_map)
+        log.info(f"✓ Topics seeded: {len(topic_map)} total")
+
+        log.info("Seeding exams...")
+        exam_map = await _seed_exams(db, subject_map)
+        log.info(f"✓ Exams seeded: {len(exam_map)} total")
+
+        log.info("Seeding blueprints...")
+        await _seed_blueprints(db, subject_map, topic_map, exam_map)
+        log.info(f"✓ Blueprints seeded")
+    except Exception as e:
+        log.error(f"Seed failed: {e}", exc_info=True)
+        raise
 
 
 async def _seed_subjects(db: AsyncSession) -> dict[str, int]:
@@ -364,24 +384,34 @@ async def _seed_blueprints(
             difficulty_level=difficulty,
         ))
 
+    import logging
+    log = logging.getLogger(__name__)
+    blueprint_count = 0
+
     for year in EXAM_YEARS:
         full_exam_id = exam_map.get((FULL_EXAM_SUBJECT, year))
+        log.info(f"Processing year {year}, full_exam_id={full_exam_id}")
 
         for subject_name in SUBJECTS:
             config = BLUEPRINT_CONFIG.get(subject_name, {})
             per_subject_exam_id = exam_map.get((subject_name, year))
+            log.info(f"  {subject_name}: per_subject_exam_id={per_subject_exam_id}, {len(config)} topics")
 
             for topic_name, (expected_q, difficulty) in config.items():
                 topic_id = topic_map.get((subject_name, topic_name))
                 if not topic_id:
+                    log.warning(f"    Topic not found: {subject_name}/{topic_name}")
                     continue
 
                 # Per-subject exam blueprint
                 if per_subject_exam_id:
                     await _add_blueprint(per_subject_exam_id, topic_id, expected_q, difficulty)
+                    blueprint_count += 1
 
                 # Full exam blueprint — same topic, same config
                 if full_exam_id:
                     await _add_blueprint(full_exam_id, topic_id, expected_q, difficulty)
+                    blueprint_count += 1
 
+    log.info(f"Total blueprints created: {blueprint_count}")
     await db.commit()
