@@ -139,6 +139,7 @@ async def get_dashboard_stats(student_id: int, db: AsyncSession = Depends(get_db
     base_filter = [
         ExamSession.student_id == student_id,
         ExamSession.status == "completed",
+        ExamSession.correct_count.isnot(None),  # Only count sessions with actual results
     ]
 
     # ── 1. Total sessions ────────────────────────────────────────────────────

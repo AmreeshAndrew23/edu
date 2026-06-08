@@ -193,7 +193,13 @@ async def start_memory_recall(
     Create a quiz session from questions the student previously answered incorrectly.
     Returns the same SessionStartResponse as /start so the frontend quiz flow is identical.
     """
-    exam = (await db.execute(select(Exam).limit(1))).scalar_one_or_none()
+    # Use "All Subjects" exam (full exam, not a specific subject)
+    exam = (await db.execute(
+        select(Exam).join(Subject, Exam.subject_id == Subject.id)
+        .where(Subject.name == "All Subjects")
+        .order_by(Exam.exam_year.desc())
+        .limit(1)
+    )).scalar_one_or_none()
     if not exam:
         raise HTTPException(status_code=404, detail="No exam found in database.")
 
@@ -212,10 +218,24 @@ async def start_memory_recall(
         .limit(payload.limit)
     )).scalars().all()
 
+    # If no wrong answers, return empty quiz (200) instead of 404
     if not wrong_ids:
-        raise HTTPException(
-            status_code=404,
-            detail="no_wrong_answers",
+        empty_session = ExamSession(
+            student_id=payload.student_id,
+            exam_id=exam.id,
+            status="in_progress",
+            total_questions=0,
+            started_at=datetime.utcnow(),
+        )
+        db.add(empty_session)
+        await db.commit()
+        await db.refresh(empty_session)
+        return SessionStartResponse(
+            session_id=empty_session.id,
+            total_questions=0,
+            exam_id=exam.id,
+            difficulty="memory_recall",
+            questions=[],
         )
 
     questions = (await db.execute(
@@ -284,7 +304,13 @@ async def start_rapid_revision(
     Start a model exam session using uploaded NEET previous-year paper questions.
     Optionally filter by year and/or subject.
     """
-    exam = (await db.execute(select(Exam).limit(1))).scalar_one_or_none()
+    # Use "All Subjects" exam (full exam, not a specific subject)
+    exam = (await db.execute(
+        select(Exam).join(Subject, Exam.subject_id == Subject.id)
+        .where(Subject.name == "All Subjects")
+        .order_by(Exam.exam_year.desc())
+        .limit(1)
+    )).scalar_one_or_none()
     if not exam:
         raise HTTPException(status_code=404, detail="No exam found in database.")
 

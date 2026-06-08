@@ -204,7 +204,7 @@ async def submit_session(
 ) -> SessionResultResponse:
     """
     Score the student's answers, record each StudentAnswer row,
-    and mark the session completed.
+    and mark the session completed. Idempotent — retries don't duplicate answers.
     """
 
     session = await db.get(ExamSession, session_id)
@@ -212,7 +212,8 @@ async def submit_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     if session.status != "in_progress":
-        raise HTTPException(status_code=400, detail="Session is already submitted")
+        # Already submitted — return cached results instead of failing
+        return await get_session_results(db, session_id)
 
     # Fetch all questions for this session in one query
     question_ids = [a.question_id for a in payload.answers]
@@ -220,6 +221,12 @@ async def submit_session(
         select(Question).where(Question.id.in_(question_ids))
     )
     questions_by_id = {q.id: q for q in q_result.scalars().all()}
+
+    # Check for existing answers (idempotency — delete old ones if resubmitting)
+    existing = (await db.execute(
+        select(StudentAnswer.question_id).where(StudentAnswer.session_id == session_id)
+    )).scalars().all()
+    existing_qids = set(existing)
 
     correct_count = 0
     answer_rows: list[StudentAnswer] = []
@@ -239,16 +246,20 @@ async def submit_session(
         if is_correct:
             correct_count += 1
 
-        answer_rows.append(
-            StudentAnswer(
-                session_id=session_id,
-                question_id=item.question_id,
-                selected_option=item.selected_option,
-                is_correct=is_correct,
+        # Skip if answer already exists for this question in this session
+        if item.question_id not in existing_qids:
+            answer_rows.append(
+                StudentAnswer(
+                    session_id=session_id,
+                    question_id=item.question_id,
+                    selected_option=item.selected_option,
+                    is_correct=is_correct,
+                )
             )
-        )
 
-    db.add_all(answer_rows)
+    # Only add new answers, don't duplicate
+    if answer_rows:
+        db.add_all(answer_rows)
 
     score_pct = round((correct_count / session.total_questions) * 100, 2) if session.total_questions else 0.0
 
