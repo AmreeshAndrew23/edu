@@ -109,6 +109,17 @@ async def cors_middleware(request: Request, call_next):
     return response
 
 
+@app.get("/")
+async def root():
+    return {
+        "message": "QuizThala API",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/health",
+        "health_db": "/health/db",
+    }
+
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
