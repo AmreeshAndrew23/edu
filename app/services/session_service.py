@@ -130,6 +130,19 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
 
     count = payload.count if payload.count else DIFFICULTY_COUNTS[difficulty]
 
+    # For topic-specific sessions, use the blueprint's difficulty (not the client-supplied value).
+    # Most topics are "medium" or "hard" in the blueprint; the frontend always sends "easy",
+    # so without this override no blueprint would match and no questions would be generated.
+    if payload.topic_id:
+        bp_row = (await db.execute(
+            select(ExamBlueprint).where(
+                ExamBlueprint.exam_id == payload.exam_id,
+                ExamBlueprint.topic_id == payload.topic_id,
+            )
+        )).scalar_one_or_none()
+        if bp_row and bp_row.difficulty_level:
+            difficulty = bp_row.difficulty_level
+
     q_filters = [
         Question.exam_id == payload.exam_id,
         Question.difficulty_level == difficulty,
