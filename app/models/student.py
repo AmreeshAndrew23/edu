@@ -16,10 +16,14 @@ class Student(Base, TimestampMixin):
     date_of_birth: Mapped[Date] = mapped_column(Date, nullable=False)
     country_id: Mapped[int] = mapped_column(Integer, ForeignKey("countries.id"), nullable=False)
     state_id: Mapped[int] = mapped_column(Integer, ForeignKey("states.id"), nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("parents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     country = relationship("Country")
     state = relationship("State")
     sessions = relationship("ExamSession", back_populates="student")
+    parent = relationship("Parent", back_populates="children")
 
     @property
     def name(self) -> str:

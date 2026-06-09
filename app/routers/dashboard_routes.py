@@ -391,6 +391,54 @@ async def get_calendar_data(
     return CalendarData(days=days)
 
 
+@router.get("/heatmap")
+async def get_heatmap_data(
+    student_id: int,
+    days: int = 84,
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-day quiz activity for the last N days — used by the streak heatmap chart."""
+    today = date.today()
+    start = today - timedelta(days=days - 1)
+
+    rows = (await db.execute(
+        select(
+            cast(ExamSession.completed_at, Date).label("d"),
+            func.count(ExamSession.id).label("sessions"),
+            func.sum(func.coalesce(ExamSession.correct_count, 0)).label("correct"),
+            func.sum(func.coalesce(ExamSession.total_questions, 0)).label("total_qs"),
+        )
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.status == "completed",
+            ExamSession.completed_at.isnot(None),
+            cast(ExamSession.completed_at, Date) >= start,
+            cast(ExamSession.completed_at, Date) <= today,
+        )
+        .group_by(cast(ExamSession.completed_at, Date))
+        .order_by(cast(ExamSession.completed_at, Date))
+    )).all()
+
+    day_map: dict = {}
+    for r in rows:
+        correct = r.correct or 0
+        total   = r.total_qs or 0
+        wrong   = total - correct
+        day_map[r.d.strftime("%Y-%m-%d")] = {
+            "sessions": r.sessions,
+            "marks":    correct * 4 - wrong,
+            "accuracy": round(correct / total * 100, 1) if total else 0.0,
+        }
+
+    result = []
+    for i in range(days):
+        d  = start + timedelta(days=i)
+        ds = d.strftime("%Y-%m-%d")
+        result.append({"date": ds, **day_map.get(ds, {"sessions": 0, "marks": 0, "accuracy": 0.0})})
+
+    return {"days": result}
+
+
 @router.get("/daily", response_model=DailyStats)
 async def get_daily_stats(
     student_id: int,
