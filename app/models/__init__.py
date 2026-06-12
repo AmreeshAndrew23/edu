@@ -1,5 +1,6 @@
 from app.models.country import Country
 from app.models.state import State
+from app.models.parent import Parent
 from app.models.student import Student
 from app.models.subject import Subject
 from app.models.topic import Topic

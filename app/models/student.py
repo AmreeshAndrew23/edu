@@ -17,11 +17,15 @@ class Student(Base, TimestampMixin):
     country_id: Mapped[int] = mapped_column(Integer, ForeignKey("countries.id"), nullable=False)
     state_id: Mapped[int] = mapped_column(Integer, ForeignKey("states.id"), nullable=False)
     current_difficulty: Mapped[str] = mapped_column(String(20), default="easy", nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("parents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     country = relationship("Country")
     state = relationship("State")
     sessions = relationship("ExamSession", back_populates="student")
     study_goals = relationship("StudyGoal", back_populates="student")
+    parent = relationship("Parent", back_populates="children")
 
     @property
     def name(self) -> str:

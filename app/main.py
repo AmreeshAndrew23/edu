@@ -20,6 +20,7 @@ from app.routers.question_routes import router as question_router
 from app.routers.chat_routes import router as chat_router
 from app.routers.dashboard_routes import router as dashboard_router
 from app.routers.analytics_routes import router as analytics_router
+from app.routers.parent_routes import router as parent_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ async def _background_seed():
 async def lifespan(app: FastAPI):
     from app.core.database import engine, Base
     from app.models import (  # noqa: F401
-        Country, State, Student, Subject, Topic,
+        Country, State, Parent, Student, Subject, Topic,
         Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog, AiUsageLog,
         StudyGoal, GoalProgress,
     )
@@ -76,6 +77,8 @@ async def lifespan(app: FastAPI):
         "ALTER TABLE questions ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'ai_generated'",
         "ALTER TABLE questions ADD COLUMN IF NOT EXISTS neet_year INTEGER",
         "ALTER TABLE questions ADD COLUMN IF NOT EXISTS paper_order INTEGER",
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES parents(id) ON DELETE SET NULL",
+        "ALTER TABLE students ADD COLUMN IF NOT EXISTS current_difficulty VARCHAR(20) NOT NULL DEFAULT 'easy'",
     ]
     for _sql in _migrations:
         try:
@@ -232,4 +235,8 @@ app.include_router(ai_router)
 app.include_router(question_router)
 app.include_router(chat_router)
 app.include_router(dashboard_router)
+<<<<<<< HEAD
 app.include_router(analytics_router)
+=======
+app.include_router(parent_router)
+>>>>>>> 2eaab6cc3f399247d729df3e990ca7b0c26b1823
