@@ -32,6 +32,45 @@ DIFFICULTY_COUNTS: dict[str, int] = {
 }
 
 
+async def get_adaptive_difficulty(db: AsyncSession, student_id: int) -> str:
+    """
+    Determine recommended difficulty based on last 3 completed sessions.
+    - Easy: < 50% stay on Easy, >= 70% move to Medium
+    - Medium: < 50% go to Easy, >= 70% go to Hard
+    - Hard: < 60% go to Medium, >= 75% stay on Hard
+    """
+    # Get last 3 completed sessions
+    recent = (await db.execute(
+        select(ExamSession)
+        .where(
+            ExamSession.student_id == student_id,
+            ExamSession.status == "completed",
+        )
+        .order_by(ExamSession.completed_at.desc())
+        .limit(3)
+    )).scalars().all()
+
+    if not recent:
+        return "easy"
+
+    # Calculate average score of recent sessions
+    avg_score = sum(s.score_percentage or 0 for s in recent) / len(recent)
+    current_diff = recent[0].difficulty_level or "easy"
+
+    logger.info(f"Adaptive difficulty: student_id={student_id}, avg_score={avg_score:.1f}%, current={current_diff}")
+
+    if current_diff == "easy":
+        return "medium" if avg_score >= 70 else "easy"
+    elif current_diff == "medium":
+        if avg_score < 50:
+            return "easy"
+        return "hard" if avg_score >= 70 else "medium"
+    else:  # hard
+        if avg_score < 60:
+            return "medium"
+        return "hard"
+
+
 async def _ensure_questions(
     db: AsyncSession,
     exam: Exam,
@@ -40,9 +79,13 @@ async def _ensure_questions(
 ) -> None:
     """Generate questions via OpenAI for topics in this exam that are below blueprint quota.
     Pass topic_id to restrict generation to that topic only (much faster for topic drills).
+    Falls back to any available difficulty if the exact one isn't found.
     """
     from app.services.question_service import generate_questions
 
+    logger.info(f"_ensure_questions: exam_id={exam.id}, difficulty={difficulty}, topic_id={topic_id}")
+
+    # First try exact difficulty match
     bp_query = (
         select(ExamBlueprint, Topic, Subject)
         .join(Topic, ExamBlueprint.topic_id == Topic.id)
@@ -56,6 +99,22 @@ async def _ensure_questions(
         bp_query = bp_query.where(ExamBlueprint.topic_id == topic_id)
 
     rows = (await db.execute(bp_query)).all()
+    logger.info(f"  Found {len(rows)} blueprints for exam_id={exam.id}, difficulty={difficulty}")
+
+    # If no exact match, try ANY difficulty for this exam/topic
+    if not rows and topic_id:
+        logger.info(f"  No exact difficulty match, falling back to any difficulty for topic_id={topic_id}")
+        bp_query = (
+            select(ExamBlueprint, Topic, Subject)
+            .join(Topic, ExamBlueprint.topic_id == Topic.id)
+            .join(Subject, Topic.subject_id == Subject.id)
+            .where(
+                ExamBlueprint.exam_id == exam.id,
+                ExamBlueprint.topic_id == topic_id,
+            )
+        )
+        rows = (await db.execute(bp_query)).all()
+        logger.info(f"  Found {len(rows)} blueprints with any difficulty")
 
     for bp, topic, subject in rows:
         existing = (await db.execute(
@@ -66,11 +125,12 @@ async def _ensure_questions(
             )
         )).scalar() or 0
 
-        needed = bp.expected_questions - existing
+        # Generate 2x the blueprint requirement for variety
+        needed = max(bp.expected_questions * 2 - existing, 0)
         if needed <= 0:
             continue
 
-        logger.info("Auto-generating %d %s questions for topic '%s'", needed, difficulty, topic.topic_name)
+        logger.info("Auto-generating %d %s questions for topic '%s' (need %d beyond blueprint)", needed, difficulty, topic.topic_name, bp.expected_questions)
         try:
             generated, usage = await generate_questions(
                 exam_name=exam.exam_name,
@@ -116,6 +176,8 @@ async def _ensure_questions(
 
 
 async def start_session(db: AsyncSession, payload: SessionStartRequest) -> SessionStartResponse:
+    logger.info(f"start_session: student_id={payload.student_id}, exam_id={payload.exam_id}, subject_id={payload.subject_id}, topic_id={payload.topic_id}, count={payload.count}")
+
     student = await db.get(Student, payload.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -123,12 +185,20 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     exam = await db.get(Exam, payload.exam_id)
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
+    logger.info(f"  Exam: {exam.exam_name} {exam.exam_year}")
 
-    difficulty = payload.difficulty.lower()
+    # Use adaptive difficulty if not specified
+    if payload.difficulty:
+        difficulty = payload.difficulty.lower()
+    else:
+        difficulty = await get_adaptive_difficulty(db, payload.student_id)
+        logger.info(f"  Using adaptive difficulty: {difficulty}")
+
     if difficulty not in DIFFICULTY_COUNTS:
         raise HTTPException(status_code=400, detail="difficulty must be easy, medium, or hard")
 
     count = payload.count if payload.count else DIFFICULTY_COUNTS[difficulty]
+    logger.info(f"  Difficulty: {difficulty}, Count: {count}")
 
     q_filters = [
         Question.exam_id == payload.exam_id,
@@ -153,7 +223,8 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     questions = (await db.execute(
         select(Question)
         .where(*q_filters, Question.id.notin_(seen_sq))
-        .order_by(func.random())
+        .distinct(Question.id)
+        .order_by(Question.id, func.random())
         .limit(count)
     )).scalars().all()
 
@@ -164,14 +235,15 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
         questions = (await db.execute(
             select(Question)
             .where(*q_filters, Question.id.notin_(seen_sq))
-            .order_by(func.random())
+            .distinct(Question.id)
+            .order_by(Question.id, func.random())
             .limit(count)
         )).scalars().all()
 
     if not questions:
         # All questions in pool already seen — repeat from full pool
         questions = (await db.execute(
-            select(Question).where(*q_filters).order_by(func.random()).limit(count)
+            select(Question).where(*q_filters).distinct(Question.id).order_by(Question.id, func.random()).limit(count)
         )).scalars().all()
 
     if not questions:
@@ -180,6 +252,8 @@ async def start_session(db: AsyncSession, payload: SessionStartRequest) -> Sessi
     session = ExamSession(
         student_id=payload.student_id,
         exam_id=payload.exam_id,
+        subject_id=payload.subject_id,
+        topic_id=payload.topic_id,
         status="in_progress",
         total_questions=len(questions),
         started_at=datetime.utcnow(),
@@ -270,6 +344,15 @@ async def submit_session(
 
     await db.commit()
     await db.refresh(session)
+
+    # Update student's adaptive difficulty based on this session's performance
+    student = await db.get(Student, session.student_id)
+    if student:
+        next_difficulty = await get_adaptive_difficulty(db, session.student_id)
+        if next_difficulty != student.current_difficulty:
+            student.current_difficulty = next_difficulty
+            await db.commit()
+            logger.info(f"Updated student {session.student_id} difficulty: {student.current_difficulty} → {next_difficulty}")
 
     return await get_session_results(db, session_id)
 

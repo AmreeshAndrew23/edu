@@ -78,6 +78,41 @@ class DashboardStats(BaseModel):
     recent_sessions: list[RecentSession]
 
 
+# ── Parent View Schemas ────────────────────────────────────────────────────────
+
+class Recommendation(BaseModel):
+    topic_name: str
+    accuracy: float
+    action: str  # e.g., "Focus on this — only 40% accuracy"
+
+
+class ActivityExamDetail(BaseModel):
+    subject: str
+    correct: int
+    total: int
+    marks: int
+    percentage: float
+
+
+class ActivityDay(BaseModel):
+    date: str  # YYYY-MM-DD
+    quizzes_taken: int
+    details: list[ActivityExamDetail] = []
+
+
+class SubjectTime(BaseModel):
+    subject: str
+    minutes_spent: int
+
+
+class ParentDashboard(BaseModel):
+    overall_score: float  # average percentage
+    total_sessions: int
+    recommendations: list[Recommendation]
+    activity_chart: list[ActivityDay]  # last 30 days
+    time_by_subject: list[SubjectTime]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _compute_streak(session_dates: set[date]) -> int:
@@ -440,4 +475,135 @@ async def get_daily_stats(
         sessions=sessions,
         total_marks=total_marks,
         total_questions=total_questions,
+    )
+
+
+# ── Parent View endpoint ───────────────────────────────────────────────────────
+
+@router.get("/parent-view", response_model=ParentDashboard)
+async def get_parent_view(student_id: int, db: AsyncSession = Depends(get_db)):
+    """Parent dashboard: overall score, recommendations, activity, time per subject."""
+
+    base_filter = [
+        ExamSession.student_id == student_id,
+        ExamSession.status == "completed",
+        ExamSession.correct_count.isnot(None),
+    ]
+
+    # 1. Overall score (average of all completed sessions)
+    overall_row = (await db.execute(
+        select(func.avg(ExamSession.score_percentage).label("avg_score"))
+        .where(*base_filter)
+    )).one()
+    overall_score = round(float(overall_row.avg_score or 0), 1)
+
+    # 2. Total sessions
+    total_sessions = (await db.execute(
+        select(func.count(ExamSession.id))
+        .where(*base_filter)
+    )).scalar() or 0
+
+    # 3. Weak topics (lowest accuracy) - top 5
+    weak_rows = (await db.execute(
+        select(
+            Topic.topic_name,
+            func.count(StudentAnswer.id).label("total"),
+            func.sum(case((StudentAnswer.is_correct == False, 1), else_=0)).label("wrong"),  # noqa: E712
+        )
+        .select_from(StudentAnswer)
+        .join(Question, StudentAnswer.question_id == Question.id)
+        .join(ExamSession, ExamSession.id == StudentAnswer.session_id)
+        .join(Topic, Topic.id == Question.topic_id)
+        .where(*base_filter)
+        .group_by(Question.topic_id, Topic.topic_name)
+        .having(func.count(StudentAnswer.id) >= 3)
+        .order_by(func.sum(case((StudentAnswer.is_correct == False, 1), else_=0)).desc())  # noqa: E712
+        .limit(5)
+    )).all()
+
+    recommendations = []
+    for r in weak_rows:
+        accuracy = round((1 - (r.wrong or 0) / r.total) * 100, 1) if r.total else 100
+        if accuracy < 70:  # Only recommend if accuracy < 70%
+            recommendations.append(Recommendation(
+                topic_name=r.topic_name,
+                accuracy=accuracy,
+                action=f"Focus on this — {accuracy}% accuracy",
+            ))
+
+    # 4. Activity chart (last 30 days) - with exam details
+    thirty_days_ago = date.today() - timedelta(days=30)
+    activity_rows = (await db.execute(
+        select(
+            ExamSession.id,
+            cast(ExamSession.completed_at, Date).label("d"),
+            ExamSession.correct_count,
+            ExamSession.total_questions,
+            ExamSession.score_percentage,
+            Subject.name.label("subject_name"),
+        )
+        .outerjoin(Subject, Subject.id == ExamSession.subject_id)
+        .where(
+            *base_filter,
+            ExamSession.completed_at.isnot(None),
+            cast(ExamSession.completed_at, Date) >= thirty_days_ago,
+        )
+        .order_by(cast(ExamSession.completed_at, Date))
+    )).all()
+
+    # Group by date and build activity details
+    from collections import defaultdict
+    activity_by_date = defaultdict(list)
+    for r in activity_rows:
+        correct = r.correct_count or 0
+        total = r.total_questions or 0
+        wrong = total - correct
+        marks = correct * 4 - wrong * 1
+        activity_by_date[r.d.strftime("%Y-%m-%d")].append({
+            "subject": r.subject_name or "Full NEET",
+            "correct": correct,
+            "total": total,
+            "marks": marks,
+            "percentage": round(float(r.score_percentage or 0), 1),
+        })
+
+    activity_chart = [
+        ActivityDay(
+            date=d,
+            quizzes_taken=len(sessions),
+            details=sessions,
+        )
+        for d, sessions in sorted(activity_by_date.items())
+    ]
+
+    # 5. Time spent per subject (in minutes)
+    time_rows = (await db.execute(
+        select(
+            Subject.name,
+            func.sum(
+                func.extract("epoch", ExamSession.completed_at - ExamSession.started_at) / 60
+            ).label("minutes"),
+        )
+        .outerjoin(Subject, Subject.id == ExamSession.subject_id)
+        .where(*base_filter, ExamSession.completed_at.isnot(None))
+        .group_by(Subject.name)
+        .order_by(func.sum(
+            func.extract("epoch", ExamSession.completed_at - ExamSession.started_at) / 60
+        ).desc())
+    )).all()
+
+    time_by_subject = [
+        SubjectTime(
+            subject=r.name or "Full NEET",
+            minutes_spent=int(round(r.minutes or 0)),
+        )
+        for r in time_rows
+    ]
+
+    return ParentDashboard(
+        overall_score=overall_score,
+        total_sessions=total_sessions,
+        recommendations=recommendations,
+        activity_chart=activity_chart,
+        time_by_subject=time_by_subject,
     )

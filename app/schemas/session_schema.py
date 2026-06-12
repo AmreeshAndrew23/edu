@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 class SessionStartRequest(BaseModel):
     student_id: int
     exam_id: int
-    difficulty: str = "easy"
+    difficulty: str | None = None  # if null, use adaptive difficulty
     topic_id: int | None = None
     subject_id: int | None = None  # filter by subject (null = full exam)
     count: int | None = None       # override default question count

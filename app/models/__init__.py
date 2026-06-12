@@ -10,3 +10,4 @@ from app.models.exam_session import ExamSession
 from app.models.student_answer import StudentAnswer
 from app.models.chat_log import ChatLog
 from app.models.ai_usage_log import AiUsageLog
+from app.models.study_goal import StudyGoal, GoalProgress

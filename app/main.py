@@ -2,10 +2,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import text, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.routers.auth_routes import router as auth_router
 from app.routers.country_routes import router as country_router
 from app.routers.student_routes import router as student_router
@@ -17,6 +19,7 @@ from app.routers.ai_routes import router as ai_router
 from app.routers.question_routes import router as question_router
 from app.routers.chat_routes import router as chat_router
 from app.routers.dashboard_routes import router as dashboard_router
+from app.routers.analytics_routes import router as analytics_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +49,7 @@ async def lifespan(app: FastAPI):
     from app.models import (  # noqa: F401
         Country, State, Student, Subject, Topic,
         Exam, ExamBlueprint, Question, ExamSession, StudentAnswer, ChatLog, AiUsageLog,
+        StudyGoal, GoalProgress,
     )
 
     # Retry DB connection — Railway PostgreSQL may not be ready immediately
@@ -120,6 +124,46 @@ async def root():
     }
 
 
+@app.get("/debug/exam/{exam_id}")
+async def debug_exam(exam_id: int, db: AsyncSession = Depends(get_db)):
+    """Debug single exam"""
+    from sqlalchemy import func
+    from app.models.exam import Exam
+    from app.models.exam_blueprint import ExamBlueprint
+    from app.models.subject import Subject
+    from app.models.topic import Topic
+
+    exam = await db.get(Exam, exam_id)
+    if not exam:
+        return {"error": f"Exam {exam_id} not found"}
+
+    exam_subject = await db.get(Subject, exam.subject_id)
+
+    # Count blueprints
+    bp_count = (await db.execute(
+        select(func.count(ExamBlueprint.id))
+        .where(ExamBlueprint.exam_id == exam_id)
+    )).scalar()
+
+    # Get blueprints by subject
+    bp_by_subject = (await db.execute(
+        select(Subject.name, func.count(ExamBlueprint.id).label("count"))
+        .join(Topic, Topic.subject_id == Subject.id)
+        .join(ExamBlueprint, ExamBlueprint.topic_id == Topic.id)
+        .where(ExamBlueprint.exam_id == exam_id)
+        .group_by(Subject.name)
+    )).all()
+
+    return {
+        "exam_id": exam_id,
+        "exam_name": exam.exam_name,
+        "exam_year": exam.exam_year,
+        "exam_subject": exam_subject.name if exam_subject else None,
+        "total_blueprints": bp_count,
+        "blueprints_by_subject": {name: count for name, count in bp_by_subject},
+    }
+
+
 @app.get("/debug/blueprints")
 async def debug_blueprints(db: AsyncSession = Depends(get_db)):
     """Debug endpoint to check what blueprints exist in DB"""
@@ -188,3 +232,4 @@ app.include_router(ai_router)
 app.include_router(question_router)
 app.include_router(chat_router)
 app.include_router(dashboard_router)
+app.include_router(analytics_router)
